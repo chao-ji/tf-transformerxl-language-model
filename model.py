@@ -415,7 +415,7 @@ class TransformerXLModel(tf.keras.Model):
                                 dropout_rate_attention) 
                                     for _ in range(self._stack_size)]
 
-  def call(self, inputs, memories):
+  def call(self, inputs, memories, training=True):
     """Takes as input the token ids of a batch of sequence segments as well
     as the embeddings of tokens from the previous sequence segment, and 
     computes the estimated logits of the immediate "next" tokens of each token
@@ -427,21 +427,28 @@ class TransformerXLModel(tf.keras.Model):
       memories: float tensor of shape [num_layers, batch_size, m_seq_len, 
         hidden_size], embeddings of the tokens from the previous sequence 
         segment for each layer of the decoder stack.
+      training: bool scalar, True if in training mode. 
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size],  
     """
-    training = False
     m_seq_len = memories.shape[2]
     q_seq_len = inputs.shape[1]
     r_seq_len = m_seq_len + q_seq_len
     new_memories = []
 
+    # [32, 50, 410]
     embeddings = self._embedding_layer(inputs) * self._hidden_size ** 0.5
-    attn_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
+    print('embedddings', embeddings.shape)
 
+    # [1, 1, 50, 100]
+    attn_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
+    print('attn_mask', attn_mask.shape)
+
+    # [100, 410] 
     positional_encoding = utils.get_positional_encoding(
-        r_seq_len, self._hidden_size)  
+        r_seq_len, self._hidden_size) 
+    print('positional_encoding', positional_encoding.shape) 
     embeddings = self._embeddings_dropout_layer(
         embeddings, training=training)
     positional_encoding = self._positional_encoding_dropout_layer(
@@ -461,4 +468,19 @@ class TransformerXLModel(tf.keras.Model):
     print('new_memories', new_memories.shape)
     return outputs, new_memories
 
+  def step(self, decoder_input, memories):
+    m_seq_len = memories.shape[2]
+    q_seq_len = 1
+    r_seq_len = m_seq_len + q_seq_len
 
+    new_memories = []
+
+    embeddings = self._embedding_layer(inputs) * self._hidden_size ** 0.5
+
+    positional_encoding = utils.get_positional_encoding(
+        r_seq_len, self._hidden_size)
+
+    for i in range(self._stack_size):
+      new_memories
+      embeddings = self._stack[i](
+          embeddings, positional_encoding,  )
