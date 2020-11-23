@@ -1,112 +1,175 @@
 """Defines TransformerXL model in tf.keras.API."""
 import tensorflow as tf
-import numpy as np
 
 import utils
+from commons.tokenization import SOS_ID
+from commons.tokenization import EOS_ID
+from commons.beam_search import NEG_INF
+from commons import beam_search
 
 
-class AdaptiveSoftmax(tf.keras.layers.Layer):
-  """Implements adaptive softmax for large vocabulary size."""
-  def __init__(self, cutoffs, vocab_size, hidden_size):
+class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
+  """Computes the adaptive softmax or the corresponding loss for language models
+  with very large vocabulary, according to https://arxiv.org/abs/1609.04309,
+  "Efficient softmax approximation for GPUs, Grave et al. 2016".
+  """
+  def __init__(self, 
+               hidden_size, 
+               cutoffs, 
+               project_factor=4, 
+               weight_initializer='glorot_uniform'):
     """Constructor.
 
     Args:
-      vocab_size: int scalar, num of entries in the vocabulary.
       hidden_size: int scalar, the hidden size of continuous representation.
+      cutoffs: list of ints, the boundaries of word indices (words are sorted in 
+        descending order of frequencies in the vocabulary) with which to split 
+        the set of words into a head group and potentially multiple tail groups. 
+        For example, for `cutoff` = [b0, b1, ..., V], where `V` is the 
+        vocabulary size, the head contains words with indices `< b0`, and the 
+        first tail contains words with indices `>= b0` and `< b1`, and so on.
+      project_factor: int scalar, the factor by which to decrease the hidden 
+        size of word embeddings for different tails. For example, words in the
+        head has hidden size `hidden_size`, where words in the first tail has
+        reduced hidden size `hidden_size // project_factor`, and so on.
+      weight_initializer: string scalar, the weight initializer.
     """
-    super(AdaptiveSoftmax, self).__init__()
+    super(AdaptiveSoftmaxV1, self).__init__()
+    self._hidden_size = hidden_size
     self._cutoffs = cutoffs
-    self._vocab_size = vocab_size 
-    self._hidden_size = hidden_size 
+    self._project_factor = project_factor
+    self._weight_initializer = 'glorot_uniform'
 
-    self._cutoff_ends = [0] + cutoffs + [vocab_size]
-
-  def _gather_logprob(self, logprob, labels):
-    lp_size = tf.shape(logprob)
-    r = tf.range(lp_size[0])
-    index = tf.stack([r, labels], 1)
-    return tf.gather_nd(logprob, index)  
+    self._num_tails = len(self._cutoffs) - 1
 
   def build(self, inputs_shape):
-    for i in range(len(self._cutoff_ends) - 1):
-      l_index, r_index = self._cutoff_ends[i], self._cutoff_ends[i + 1]
-      self.add_weight(name='b%s' % i, shape=(r_index - l_index), 
-          initializer='zeros', dtype='float32', trainable=True)
-       
-    self.add_weight(name='cluster_weight', 
-                    shape=[len(self._cutoffs), self._hidden_size], 
-                    initializer='zeros')
-    self.add_weight(name='cluster_bias', 
-                    shape=[len(self._cutoffs)], 
-                    initializer='zeros')
- 
-    super(AdaptiveSoftmax, self).build(inputs_shape)
-
-  def call(self, inputs, labels, embedding_weights):
-    """
+    """Creates weights of this layer.
 
     Args:
-      inputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the 
-        embeddings of input tokens.
-      labels: int tensor of shape [batch_size, q_sesq_len], the ids of 
-        groundtruth next tokens.
-      embedding_weights: float tensor of shape [vocab_size, hidden_size], the
-        matrix storing the embeddings of each token from the vocabulary.
-      
-    Returns:
-      loss: float tensor of shape [batch_size, q_seq_len], the per token 
-        cross-entropy loss.
+      inputs_shape: tuple of ints or 1-D int tensor.
     """
-    neg_log_likelihood = [] #tf.zeros_like(labels, dtype='float32')
-    output_shape = labels.shape
-    print('inputs', inputs.shape)
-    for i in range(len(self._cutoff_ends) - 1):
-      l_index, r_index = self._cutoff_ends[i], self._cutoff_ends[i + 1]
+    self.add_weight(name='head_weight',
+                    shape=(self._hidden_size, 
+                           self._cutoffs[0] + self._num_tails),
+                    initializer=self._weight_initializer,
+                    dtype='float32',
+                    trainable=True)  
 
-      # [batch_size, q_seq_len] 32, 50
-      mask = tf.logical_and(labels >= l_index, labels < r_index)
-      # [batch_size * q_seq_len, 2] 1600 2
-      mask_index = tf.where(mask)
+    current_project_factor = self._project_factor
+    for i in range(self._num_tails):
+      project_size = max(1, self._hidden_size // current_project_factor)
+      current_project_factor *= self._project_factor
+      self.add_weight(name='tail_weight_proj_%d' % i, 
+                      shape=(self._hidden_size, project_size),
+                      initializer=self._weight_initializer,
+                      dtype='float32',
+                      trainable=True)
 
-      # [batch_size * q_seq_len] 1600 
-      cur_labels = tf.boolean_mask(labels, mask) - l_index
+      tail_size = self._cutoffs[i + 1] - self._cutoffs[i]
+      self.add_weight(name='tail_weight_%d' % i,
+                      shape=(project_size, tail_size),
+                      initializer=self._weight_initializer,
+                      dtype='float32',
+                      trainable=True)
+    super(AdaptiveSoftmaxV1, self).build(inputs_shape)
 
-      # [seg_size, hidden_size] 
-      cur_W = embedding_weights[l_index: r_index]
-      # [seg_size]     
-      cur_b = self.trainable_variables[i] 
+  def call(self, inputs, labels=None, mode='softmax'):
+    """Computes the forward pass of Adaptive Softmax.
 
-      if i == 0:
-        # [num_segs, hidden_size] 3, 410
-        # [num_segs] 3
-        cluster_weight, cluster_bias = self.trainable_variables[-2:]
-        cur_W = tf.concat([cur_W, cluster_weight], 0)
-        cur_b = tf.concat([cur_b, cluster_bias], 0)
+    It operates in either "softmax" mode or "loss" mode:
+    
+      - In softmax mode, it computes the per-token softmax of shape [batch_size, 
+        seq_len, vocab_size], given only input word embeddings.
+      - In loss mode, it computes the per-token loss of shape [head_size + 
+        tail1_size + tail2_size + ...], given both input word embeddings as well 
+        as groundtruth token ids, where `head_size = batch_size * seq_len` and 
+        `tail1_size`, `tail2_size`, ..., are the num of words whose indices fall 
+        within the range of tail1, tail2, ..., and they may be zero. 
 
-        head_logit = tf.matmul(inputs, cur_W, transpose_b=True) + cur_b #self._logit(inputs, cur_W, cur_b)
+    Args:
+      inputs: float tensor of shape [batch_size, seq_len, hidden_size], the 
+        tensor holding input word embeddings computed from the laste layer of 
+        TransformerXL model.
+      labels: int tensor of shape [batch_size, seq_len], the tensor holding 
+        groundtruth token ids.
+      mode: string scalar, "softmax" or "loss".
 
-        head_logprob = tf.nn.log_softmax(head_logit)
+    Returns:
+      outputs: float tensor of shape [batch_size, seq_len, vocab_size], the 
+        per-token softmax, if in "softmax" mode; Or float tensor of shape 
+        [head_size + tail1_size + tail2_size + ...], the per-token loss, if in
+        "loss" mode. 
+    """
+    if mode == 'softmax':
+      return self.compute_softmax(inputs)
+    elif mode == 'loss':
+      return self.compute_loss(inputs, labels)
+    else:
+      raise ValueError('')
 
-        cur_head_logprob = tf.boolean_mask(head_logprob, mask)
+  def compute_loss(self, inputs, labels):
+    """
+    """
+    head_weight = self.trainable_variables[0]
 
-        cur_logprob = self._gather_logprob(cur_head_logprob, cur_labels)
-      else:
-        cur_head_logprob=  tf.boolean_mask(head_logprob, mask)
+    training_losses = []
+    head_labels = labels
 
-        cur_hidden = tf.boolean_mask(inputs, mask)
+    for i in range(self._num_tails):
+      tail_weight_proj = self.trainable_variables[i*2+1]
+      tail_weight = self.trainable_variables[i*2+2]
 
-        #tail_logit = tf.squeeze(self._logit(cur_hidden[None], cur_W, cur_b), 0)
-        tail_logit = tf.matmul(cur_hidden, cur_W, transpose_b=True) + cur_b
+      mask = tf.logical_and(tf.greater_equal(labels, self._cutoffs[i]), 
+                            tf.less(labels, self._cutoffs[i + 1]))
+      head_labels = tf.where(mask, self._cutoffs[0] + i, head_labels)
 
-        tail_logprob = tf.nn.log_softmax(tail_logit)
-
-        
-        cur_logprob = (cur_head_logprob[:, self._cutoff_ends[1] + i - 1] + 
-                    self._gather_logprob(tail_logprob, cur_labels))
-      print('logprob', cur_logprob.shape)
-      neg_log_likelihood.append(tf.scatter_nd(mask_index, -cur_logprob, labels.shape))
+      tail_inputs = tf.boolean_mask(inputs, mask)
+      tail_logits = tf.matmul(tf.matmul(
+          tail_inputs, tail_weight_proj), tail_weight)
+      tail_labels = tf.boolean_mask(labels - self._cutoffs[i], mask)
       
-    return tf.reduce_sum(neg_log_likelihood, axis=0)
+      tail_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+          labels=tail_labels, logits=tail_logits)
+      training_losses.append(tail_loss) 
+
+    head_logits = tf.matmul(inputs, head_weight)
+
+    head_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=head_labels, logits=head_logits)
+    head_loss = tf.reshape(head_loss, [-1])
+    training_losses.append(head_loss)
+      
+    return training_losses
+
+
+  def compute_softmax(self, inputs):
+    """
+    """
+    head_weight = self.trainable_variables[0]
+
+    head_logits = tf.matmul(inputs, head_weight)
+    head_softmax = tf.nn.softmax(head_logits)
+
+    softmax_list = [head_softmax[:, :, :self._cutoffs[0]]]
+    for i in range(self._num_tails):
+      tail_weight_proj = self.trainable_variables[i*2+1]
+      tail_weight = self.trainable_variables[i*2+2]
+
+      tail_logits = tf.matmul(tf.matmul(inputs, tail_weight_proj), tail_weight)
+
+      tail_softmax = tf.nn.softmax(tail_logits)
+      index = self._cutoffs[0] + i
+      softmax_list.append(tail_softmax * head_softmax[:, :, index:index+1])
+
+    return tf.concat(softmax_list, axis=-1)
+
+
+
+
+
+
+
+
 
 class Projection(tf.keras.layers.Layer):
   def __init__(self,
@@ -284,8 +347,8 @@ class Attention(tf.keras.layers.Layer):
 
     # [batch_size, num_heads, q_seq_len, r_seq_len]
     attention_weights = (content + positions) / (self._size_per_head ** 0.5)
-    attention_weights = attention_weights * (1 - token_mask) -1e30 * token_mask
-    attention_weights = tf.nn.softmax(attention_weights, 3)
+    attention_weights += token_mask * NEG_INF
+    attention_weights = tf.nn.softmax(attention_weights, axis=3)
     attention_weights = self._attention_dropout_layer(
         attention_weights, training=training)
 
@@ -424,13 +487,16 @@ class TransformerXLModel(tf.keras.Model):
     Args:
       inputs: int tensor of shape [batch_size, q_seq_len], token ids of the 
         input sequence segments.
-      memories: float tensor of shape [num_layers, batch_size, m_seq_len, 
+      memories: float tensor of shape [batch_size, num_layers, m_seq_len, 
         hidden_size], embeddings of the tokens from the previous sequence 
         segment for each layer of the decoder stack.
       training: bool scalar, True if in training mode. 
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size],  
+
+      new_memories: float tensor of shape [batch_size, num_layers, m_seq_len, 
+        hidden_size] 
     """
     m_seq_len = memories.shape[2]
     q_seq_len = inputs.shape[1]
@@ -439,48 +505,93 @@ class TransformerXLModel(tf.keras.Model):
 
     # [32, 50, 410]
     embeddings = self._embedding_layer(inputs) * self._hidden_size ** 0.5
-    print('embedddings', embeddings.shape)
 
     # [1, 1, 50, 100]
     attn_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
-    print('attn_mask', attn_mask.shape)
 
     # [100, 410] 
     positional_encoding = utils.get_positional_encoding(
         r_seq_len, self._hidden_size) 
-    print('positional_encoding', positional_encoding.shape) 
     embeddings = self._embeddings_dropout_layer(
         embeddings, training=training)
     positional_encoding = self._positional_encoding_dropout_layer(
         positional_encoding, training=training)
 
     for i in range(self._stack_size): 
-      new_memories.append(tf.stop_gradient(tf.identity(embeddings)))
+      #new_memories.append(
+      #    tf.concat([memories[:, i], embeddings], axis=1)[:, -m_seq_len:])
+      new_memories.append(utils.cache_memory(memories[:, i], embeddings))
+
       embeddings = self._stack[i](
-          embeddings, positional_encoding, attn_mask, memories[i], training)
+          embeddings, positional_encoding, attn_mask, memories[:, i], training)
 
     outputs = self._dropout_layer(embeddings, training=training)
 
-    new_memories = tf.stack(new_memories, axis=0)
-    print('inputs', inputs.shape)
-    print('memories', memories.shape)
-    print('outputs', outputs.shape)
-    print('new_memories', new_memories.shape)
+    new_memories = tf.stack(new_memories, axis=1)
     return outputs, new_memories
 
-  def step(self, decoder_input, memories):
-    m_seq_len = memories.shape[2]
-    q_seq_len = 1
-    r_seq_len = m_seq_len + q_seq_len
+  def predict(self, prime_token_ids, mems, scoring_fn):
+    decoding_fn = self._build_decoding_fn(scoring_fn) 
 
-    new_memories = []
+    batch_size, _ = prime_token_ids.shape
+    prime_token_embeddings = self._embedding_layer(prime_token_ids) * self._hidden_size ** 0.5 
+    max_length = 512
 
-    embeddings = self._embedding_layer(inputs) * self._hidden_size ** 0.5
+    #decoding_cache = {'memories': tf.zeros((1, 
+    #                                        self._stack_size, 
+    #                                        50, 
+    #                                        self._hidden_size), dtype='float32')}
 
-    positional_encoding = utils.get_positional_encoding(
-        r_seq_len, self._hidden_size)
+    decoding_cache = {'memories': mems}
 
-    for i in range(self._stack_size):
-      new_memories
-      embeddings = self._stack[i](
-          embeddings, positional_encoding,  )
+    self._beam_width = 4
+    self._alpha = 0.6
+
+    bs = beam_search.BeamSearch(decoding_fn,
+                                self._vocab_size,
+                                batch_size, 
+                                self._beam_width,
+                                self._alpha,
+                                max_length,
+                                self._vocab_size)    
+
+    
+    initial_ids = tf.zeros([batch_size], dtype='int32')
+
+    out = bs.search(initial_ids, decoding_cache)
+    return out
+
+  def _build_decoding_fn(self, scoring_fn):
+    def decoding_fn(decoder_input, cache, **kwargs):
+      """
+      decoder_input: [batch_size * beam_width, 1]
+      memories: [batch_size * beam_width, num_layers, m_seq_len, hidden_size]
+      Returns:
+        softmax: [batch_size * beam_width, vocab_size]
+      """
+      memories = cache['memories']
+
+      m_seq_len = memories.shape[2]
+      q_seq_len = decoder_input.shape[1]
+      r_seq_len = m_seq_len + q_seq_len
+      new_memories = []
+
+      embeddings = self._embedding_layer(decoder_input) * self._hidden_size ** 0.5
+      attn_mask = tf.zeros((1, 1, q_seq_len, r_seq_len), dtype='float32')
+
+      positional_encoding = utils.get_positional_encoding(
+          r_seq_len, self._hidden_size)
+
+      for i in range(self._stack_size):
+        #print(memories[:, i].shape, embeddings.shape)
+        new_memories.append(tf.concat([memories[:, i], embeddings], axis=1)[:, -m_seq_len:])
+        embeddings = self._stack[i](
+            embeddings, positional_encoding, attn_mask, memories[:, i], training=False)
+      #print('embeddings', embeddings.shape)
+      scores = scoring_fn(embeddings)
+      #print(scores.shape)
+      cache['memories'] = tf.stack(new_memories, axis=1)
+
+      scores = tf.squeeze(scores, axis=1)
+      return scores, cache 
+    return decoding_fn

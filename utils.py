@@ -37,6 +37,7 @@ def get_look_ahead_mask(q_seq_len, m_seq_len):
 
      ...   ...
 
+  0, ... | 0, 0, 0, ..., 1
   0, ... | 0, 0, 0, ..., 0
 
   where the submatrix to the left of `|` corresponds to the memory sequence, 
@@ -110,9 +111,22 @@ class LearningRateSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
     decayed = (1 - self._alpha) * cosine_decay + self._alpha
     decayed_learning_rate = self._learning_rate * decayed
 
-    decayed_learning_rate = tf.where(
-        global_step < self._warmup_steps, self._warmup_lr, decayed_learning_rate)
+    decayed_learning_rate = tf.where(global_step < self._warmup_steps, 
+                                     self._warmup_lr, 
+                                     decayed_learning_rate)
 
     return decayed_learning_rate
 
+   
+def cache_memory(memory, embeddings, m_seq_len=None):
+  """
+  Args:
+
+  Returns:
     
+  """
+  if m_seq_len is None:
+    m_seq_len = memory.shape[1]
+  new_memory = tf.stop_gradient(
+      tf.concat([memory, embeddings], axis=1)[:, -m_seq_len:])
+  return new_memory
