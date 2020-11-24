@@ -90,8 +90,8 @@ class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
       inputs: float tensor of shape [batch_size, seq_len, hidden_size], the 
         tensor holding input word embeddings computed from the laste layer of 
         TransformerXL model.
-      labels: int tensor of shape [batch_size, seq_len], the tensor holding 
-        groundtruth token ids.
+      labels: (Optional) int tensor of shape [batch_size, seq_len], the tensor 
+        holding groundtruth token ids. Must be provided in "loss" mode.
       mode: string scalar, "softmax" or "loss".
 
     Returns:
@@ -105,10 +105,21 @@ class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
     elif mode == 'loss':
       return self.compute_loss(inputs, labels)
     else:
-      raise ValueError('')
+      raise ValueError('mode must be "softmax" or "loss", got %s' % mode)
 
   def compute_loss(self, inputs, labels):
-    """
+    """Compute the loss corresponding to adaptive softmax.
+
+    Args:
+      inputs: float tensor of shape [batch_size, seq_len, hidden_size], the 
+        tensor holding input word embeddings computed from the laste layer of 
+        TransformerXL model.
+      labels: int tensor of shape [batch_size, seq_len], the tensor holding 
+        groundtruth token ids.
+
+    Returns:
+      losses: float tensor of shape [head_size + tail1_size + tail2_size + ...],
+        the per-token loss.
     """
     head_weight = self.trainable_variables[0]
 
@@ -121,6 +132,7 @@ class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
 
       mask = tf.logical_and(tf.greater_equal(labels, self._cutoffs[i]), 
                             tf.less(labels, self._cutoffs[i + 1]))
+
       head_labels = tf.where(mask, self._cutoffs[0] + i, head_labels)
 
       tail_inputs = tf.boolean_mask(inputs, mask)
@@ -138,12 +150,21 @@ class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
         labels=head_labels, logits=head_logits)
     head_loss = tf.reshape(head_loss, [-1])
     training_losses.append(head_loss)
-      
-    return training_losses
-
+     
+    losses = tf.concat(training_losses, axis=0) 
+    return losses
 
   def compute_softmax(self, inputs):
-    """
+    """Computes adaptive softmax.
+
+    Args:
+      inputs: float tensor of shape [batch_size, seq_len, hidden_size], the 
+        tensor holding input word embeddings computed from the laste layer of 
+        TransformerXL model.
+
+    Returns:
+      softmax: float tensor of shape [batch_size, seq_len, vocab_size], the 
+        per-token softmax 
     """
     head_weight = self.trainable_variables[0]
 
@@ -161,8 +182,8 @@ class AdaptiveSoftmaxV1(tf.keras.layers.Layer):
       index = self._cutoffs[0] + i
       softmax_list.append(tail_softmax * head_softmax[:, :, index:index+1])
 
-    return tf.concat(softmax_list, axis=-1)
-
+    softmax = tf.concat(softmax_list, axis=-1)
+    return softmax
 
 
 
@@ -500,6 +521,7 @@ class TransformerXLModel(tf.keras.Model):
     """
     m_seq_len = memories.shape[2]
     q_seq_len = inputs.shape[1]
+
     r_seq_len = m_seq_len + q_seq_len
     new_memories = []
 
