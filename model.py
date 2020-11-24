@@ -552,12 +552,12 @@ class TransformerXLModel(tf.keras.Model):
     new_memories = tf.stack(new_memories, axis=1)
     return outputs, new_memories
 
-  def predict(self, prime_token_ids, mems, scoring_fn):
+  def predict(self, initial_ids, mems, scoring_fn):
     decoding_fn = self._build_decoding_fn(scoring_fn) 
 
-    batch_size, _ = prime_token_ids.shape
-    prime_token_embeddings = self._embedding_layer(prime_token_ids) * self._hidden_size ** 0.5 
-    max_length = 512
+    batch_size = initial_ids.shape[0]
+    # prime_token_embeddings = self._embedding_layer(prime_token_ids) * self._hidden_size ** 0.5 
+    max_length = self._max_length = 512
 
     #decoding_cache = {'memories': tf.zeros((1, 
     #                                        self._stack_size, 
@@ -578,8 +578,8 @@ class TransformerXLModel(tf.keras.Model):
                                 self._vocab_size)    
 
     
-    initial_ids = tf.zeros([batch_size], dtype='int32')
-
+    #initial_ids = tf.zeros([batch_size], dtype='int32')
+    print('initial_ids', initial_ids.shape)
     out = bs.search(initial_ids, decoding_cache)
     return out
 

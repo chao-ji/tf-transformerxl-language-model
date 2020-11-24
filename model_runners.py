@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import functools
 
 
 class TransformerXLModelTrainer(object):
@@ -86,7 +87,9 @@ class TransformerXLModelTrainer(object):
 
 
 class TransformerXLModelEvaluator(object):
+  """"""
   def __init__(self, model, adaptive_softmax, m_seq_len):
+    """"""
     self._model = model
     self._adaptive_softmax = adaptive_softmax
     self._m_seq_len = m_seq_len
@@ -116,6 +119,29 @@ class TransformerXLModelEvaluator(object):
     return np.exp(np.mean(loss_list))    
 
 class TransformerXLModelInferencer(object):
-  pass
+  """"""
+  def __init__(self, model, adaptive_softmax, m_seq_len):
+    """"""
+    self._model = model
+    self._adaptive_softmax = adaptive_softmax
+    self._m_seq_len = m_seq_len
 
+  def infer(self, primer_token_ids):
+    """
+    """ 
+    batch_size = primer_token_ids.shape[0]
+    stack_size = self._model._stack_size
+    m_seq_len = self._m_seq_len
+    hidden_size = self._model._hidden_size
 
+    memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
+
+    print(primer_token_ids[:, :-1].shape, primer_token_ids[:, :-1].numpy().mean(), memories.shape)
+    outputs, memories = self._model(primer_token_ids[:, :-1], memories, False)
+    print(memories.numpy().mean()) 
+    scoring_fn = functools.partial(self._adaptive_softmax, mode='softmax')
+    initial_ids = primer_token_ids[:, -1]
+
+    out = self._model.predict(initial_ids, memories, scoring_fn)
+
+    return out

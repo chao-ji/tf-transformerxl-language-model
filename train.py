@@ -81,8 +81,8 @@ optimizer = tf.keras.optimizers.Adam(
 def train_step(inputs, memories, labels):
   with tf.GradientTape() as tape:
     outputs, new_memories = model(inputs, memories)
-    training_losses = adaptive_softmax(outputs, labels, 'loss') 
-    loss = tf.reduce_mean(tf.concat(training_losses, axis=0))
+    losses = adaptive_softmax(outputs, labels, 'loss') 
+    loss = tf.reduce_mean(losses)
 
   all_vars = model.trainable_variables + adaptive_softmax.trainable_variables
 
