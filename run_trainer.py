@@ -7,8 +7,7 @@ from model import AdaptiveSoftmaxV1
 from utils import LearningRateSchedule
 from model_runners import TransformerXLModelTrainer
 
-
-dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/train.bsz-32.tlen-96.tfrecords')
+dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/train.bsz-32.tlen-128.tfrecords')
 
 def parse_fn(serialized_example):
   parse_dict = {'inputs': tf.io.VarLenFeature(tf.int64),
@@ -17,22 +16,23 @@ def parse_fn(serialized_example):
   inputs = tf.sparse.to_dense(parsed['inputs'])
   labels = tf.sparse.to_dense(parsed['labels'])
   inputs = tf.cast(inputs, 'int32')
-  labels = tf.cast(labels, 'int32') 
+  labels = tf.cast(labels, 'int32')
   return inputs, labels
 
 
 batch_size = 32
 
+
 dataset = dataset.map(parse_fn).repeat().batch(batch_size)
 
 
 vocab_size = 267735
-stack_size = 6
+stack_size = 8#6
 num_heads = 8
 filter_size = 2048
 dropout_rate = 0.1
 
-m_seq_len = 96
+m_seq_len = 128 #96
 hidden_size = 512
 
 cutoffs = [20000, 40000, 200000]
@@ -45,7 +45,7 @@ model = TransformerXLModel(vocab_size,
                            dropout_rate=dropout_rate)
 
 
-adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
+#adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
 
 clip = 0.25
 min_lr_ratio = 0.004
@@ -76,14 +76,14 @@ optimizer = tf.keras.optimizers.Adam(
     epsilon=optimizer_adam_epsilon)
 
 
-ckpt = tf.train.Checkpoint(model=model, adaptive_softmax=adaptive_softmax, optimizer=optimizer)
+ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
 
 ckpt_path = '.'
 clip_norm = 0.25
 save_ckpt_per_step = 10000
 
 
-trainer = TransformerXLModelTrainer(model, adaptive_softmax, m_seq_len)
+trainer = TransformerXLModelTrainer(model, m_seq_len, batch_size)
 
 trainer.train(dataset, optimizer, ckpt, ckpt_path, train_steps, save_ckpt_per_step, clip_norm)
 

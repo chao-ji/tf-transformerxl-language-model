@@ -126,7 +126,7 @@ def cache_memory(memory, embeddings, m_seq_len=None):
     
   """
   if m_seq_len is None:
-    m_seq_len = memory.shape[1]
+    m_seq_len = tf.shape(memory)[1] #.shape[1]
   new_memory = tf.stop_gradient(
       tf.concat([memory, embeddings], axis=1)[:, -m_seq_len:])
   return new_memory

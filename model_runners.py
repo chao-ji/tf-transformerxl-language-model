@@ -1,20 +1,21 @@
 import tensorflow as tf
 import numpy as np
 import functools
+import os
 
 
 class TransformerXLModelTrainer(object):
   """"""
 
-  def __init__(self, model, adaptive_softmax, m_seq_len):
+  def __init__(self, model, m_seq_len, batch_size):
     """Constructor.
 
     Args:
       model:
     """
     self._model = model
-    self._adaptive_softmax = adaptive_softmax
     self._m_seq_len = m_seq_len
+    self._batch_size = batch_size
 
   def train(self,
             dataset,
@@ -27,7 +28,7 @@ class TransformerXLModelTrainer(object):
             log_per_iterations=100,
             logdir='log'):
     """"""
-    batch_size = 32 #dataset.element_spec[0].shape[0]
+    batch_size = self._batch_size
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
@@ -42,11 +43,12 @@ class TransformerXLModelTrainer(object):
     def train_step(inputs, memories, labels):
       with tf.GradientTape() as tape:
         outputs, new_memories = self._model(inputs, memories)
-        losses = self._adaptive_softmax(outputs, labels, 'loss')
+        #losses = self._adaptive_softmax(outputs, labels, 'loss')
+        losses = self._model._embedding_layer(outputs, labels, mode='loss')
         loss = tf.reduce_mean(losses)
 
-      trainable_variables = (self._model.trainable_variables + 
-                             self._adaptive_softmax.trainable_variables)
+      trainable_variables = self._model.trainable_variables #+ 
+                             #self._adaptive_softmax.trainable_variables)
       gradients = tape.gradient(loss, trainable_variables)
       if clip_norm is not None:
         gradients, norm = tf.clip_by_global_norm(gradients, clip_norm)
@@ -88,15 +90,15 @@ class TransformerXLModelTrainer(object):
 
 class TransformerXLModelEvaluator(object):
   """"""
-  def __init__(self, model, adaptive_softmax, m_seq_len):
+  def __init__(self, model, m_seq_len, batch_size):
     """"""
     self._model = model
-    self._adaptive_softmax = adaptive_softmax
     self._m_seq_len = m_seq_len
+    self._batch_size = batch_size
 
   def evaluate(self, dataset):
     """"""
-    batch_size = 1
+    batch_size = self._batch_size
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
@@ -107,7 +109,7 @@ class TransformerXLModelEvaluator(object):
     loss_list = []
     def eval_step(inputs, memories, labels):
       outputs, memories = self._model(inputs, memories, training=False)
-      losses = self._adaptive_softmax(outputs, labels, 'loss')
+      losses = self._model._embedding_layer(outputs, labels, mode='loss')
       loss = tf.reduce_mean(losses)
       return loss, memories
 
@@ -118,12 +120,12 @@ class TransformerXLModelEvaluator(object):
 
     return np.exp(np.mean(loss_list))    
 
+
 class TransformerXLModelInferencer(object):
   """"""
-  def __init__(self, model, adaptive_softmax, m_seq_len):
+  def __init__(self, model, m_seq_len):
     """"""
     self._model = model
-    self._adaptive_softmax = adaptive_softmax
     self._m_seq_len = m_seq_len
 
   def infer(self, primer_token_ids):
@@ -139,7 +141,7 @@ class TransformerXLModelInferencer(object):
     print(primer_token_ids[:, :-1].shape, primer_token_ids[:, :-1].numpy().mean(), memories.shape)
     outputs, memories = self._model(primer_token_ids[:, :-1], memories, False)
     print(memories.numpy().mean()) 
-    scoring_fn = functools.partial(self._adaptive_softmax, mode='softmax')
+    scoring_fn = functools.partial(self._model._embedding_layer, mode='softmax')
     initial_ids = primer_token_ids[:, -1]
 
     out = self._model.predict(initial_ids, memories, scoring_fn)

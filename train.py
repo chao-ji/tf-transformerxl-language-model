@@ -8,7 +8,7 @@ from utils import LearningRateSchedule
 
 #tf.random.set_seed(0)
 
-dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/train.bsz-32.tlen-96.tfrecords')
+dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/train.bsz-32.tlen-128.tfrecords')
 
 def parse_fn(serialized_example):
    parse_dict = {'inputs': tf.io.VarLenFeature(tf.int64),
@@ -25,12 +25,12 @@ dataset = dataset.map(parse_fn).repeat().batch(batch_size)
 
 
 vocab_size = 267735
-stack_size = 6
+stack_size = 8#6
 num_heads = 8 
 filter_size = 2048
 dropout_rate = 0.1
 
-m_seq_len = 96 
+m_seq_len = 128 #96 
 hidden_size = 512
 
 cutoffs = [20000, 40000, 200000]
@@ -46,7 +46,7 @@ model = TransformerXLModel(vocab_size,
 memories = tf.zeros((batch_size, stack_size, m_seq_len, hidden_size))
 
 
-adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
+#adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
 
 clip = 0.25
 min_lr_ratio = 0.004
@@ -81,10 +81,11 @@ optimizer = tf.keras.optimizers.Adam(
 def train_step(inputs, memories, labels):
   with tf.GradientTape() as tape:
     outputs, new_memories = model(inputs, memories)
-    losses = adaptive_softmax(outputs, labels, 'loss') 
+    #losses = adaptive_softmax(outputs, labels, 'loss') 
+    losses = model._embedding_layer(outputs, labels, mode='loss')
     loss = tf.reduce_mean(losses)
 
-  all_vars = model.trainable_variables + adaptive_softmax.trainable_variables
+  all_vars = model.trainable_variables # + adaptive_softmax.trainable_variables
 
   grads = tape.gradient(loss, all_vars)
   clipped, gnorm = tf.clip_by_global_norm(grads, clip)
@@ -97,7 +98,8 @@ def train_step(inputs, memories, labels):
   return loss, new_memories, step - 1, lr
 
   
-ckpt = tf.train.Checkpoint(model=model, adaptive_softmax=adaptive_softmax, optimizer=optimizer)
+#ckpt = tf.train.Checkpoint(model=model, adaptive_softmax=adaptive_softmax, optimizer=optimizer)
+ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
 ckpt_path = '.'
 latest_ckpt = tf.train.latest_checkpoint(ckpt_path)
 if latest_ckpt:
