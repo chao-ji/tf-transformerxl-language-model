@@ -125,7 +125,13 @@ class TransformerXLModelEvaluator(object):
     self._batch_size = batch_size
 
   def evaluate(self, dataset):
-    """
+    """Iterate through the validation dataset and compute the perplexity.
+
+    Args:
+      dataset: a tf.data.Dataset instance, the input data generator.
+
+    Returns:
+      ppl: float scalar, the average per-token perplexity.
     """
     batch_size = self._batch_size
     stack_size = self._model._stack_size
@@ -148,7 +154,8 @@ class TransformerXLModelEvaluator(object):
       if len(loss_list) % 1000 == 0:
         print(len(loss_list))
 
-    return np.exp(np.mean(loss_list))    
+    ppl = np.exp(np.mean(loss_list))    
+    return ppl
 
 
 class TransformerXLModelInferencer(object):
