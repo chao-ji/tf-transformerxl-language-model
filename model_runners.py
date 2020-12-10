@@ -1,17 +1,22 @@
-import tensorflow as tf
-import numpy as np
+"""Defines Trainer and Evaluator class that wraps a TransformerXL model and 
+performs training, evaluation and inference, respectively.
+"""
 import functools
 import os
 
+import numpy as np
+import tensorflow as tf
+
 
 class TransformerXLModelTrainer(object):
-  """"""
-
+  """Trains a TransformerXL model."""
   def __init__(self, model, m_seq_len, batch_size):
     """Constructor.
 
     Args:
-      model:
+      model: an instance of TransformerXL model.
+      m_seq_len: int scalar, length of the memory sequence.
+      batch_size: int scalar, batch_size.
     """
     self._model = model
     self._m_seq_len = m_seq_len
@@ -27,7 +32,26 @@ class TransformerXLModelTrainer(object):
             clip_norm=None,
             log_per_iterations=100,
             logdir='log'):
-    """"""
+    """Run training iterations.
+
+    Args:
+      dataset: a tf.data.Dataset instance, the input data generator.
+      optimizer: a tf.keras.optimizer.Optimizer instance, applies gradient 
+        updates.
+      ckpt: a tf.train.Checkpoint instance, saves or load weights to/from 
+        checkpoint file.
+      ckpt_path: string scalar, the path to the directory that the checkpoint 
+        files will be written to or loaded from.
+      num_iterations: int scalar, num of iterations to train the model.
+      persist_per_iterations: int scalar, saves weights to checkpoint files
+        every `persist_per_iterations` iterations.
+      clip_norm: float scalar, the max absolute value of the norm the gradient 
+        tensors. 
+      log_per_iterations: int scalar, prints log info every `log_per_iterations`
+        iterations.
+      logdir: string scalar, the directory that the tensorboard log data will
+        be written to.
+    """
     batch_size = self._batch_size
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
@@ -43,12 +67,10 @@ class TransformerXLModelTrainer(object):
     def train_step(inputs, memories, labels):
       with tf.GradientTape() as tape:
         outputs, new_memories = self._model(inputs, memories)
-        #losses = self._adaptive_softmax(outputs, labels, 'loss')
         losses = self._model._embedding_layer(outputs, labels, mode='loss')
         loss = tf.reduce_mean(losses)
 
-      trainable_variables = self._model.trainable_variables #+ 
-                             #self._adaptive_softmax.trainable_variables)
+      trainable_variables = self._model.trainable_variables
       gradients = tape.gradient(loss, trainable_variables)
       if clip_norm is not None:
         gradients, norm = tf.clip_by_global_norm(gradients, clip_norm)
@@ -89,15 +111,22 @@ class TransformerXLModelTrainer(object):
 
 
 class TransformerXLModelEvaluator(object):
-  """"""
+  """Evaluates a TransformerXL model in terms of per-token perplexity."""
   def __init__(self, model, m_seq_len, batch_size):
-    """"""
+    """Constructor.
+
+    Args:
+      model: an instance of TransformerXL model.
+      m_seq_len: int scalar, length of the memory sequence.
+      batch_size: int scalar, batch_size.    
+    """
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
 
   def evaluate(self, dataset):
-    """"""
+    """
+    """
     batch_size = self._batch_size
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
@@ -105,7 +134,6 @@ class TransformerXLModelEvaluator(object):
 
     memories = tf.zeros((batch_size, stack_size, m_seq_len, hidden_size))
     
-
     loss_list = []
     def eval_step(inputs, memories, labels):
       outputs, memories = self._model(inputs, memories, training=False)
@@ -117,6 +145,8 @@ class TransformerXLModelEvaluator(object):
       loss, memories = eval_step(inputs, memories, labels)
 
       loss_list.append(loss.numpy())
+      if len(loss_list) % 1000 == 0:
+        print(len(loss_list))
 
     return np.exp(np.mean(loss_list))    
 

@@ -21,7 +21,7 @@ if __name__ == '__main__':
 
   mems = tf.zeros([1, stack_size, m_seq_len, hidden_size], dtype='float32')
 
-  model = TransformerXLModel(vocab_size, stack_size, hidden_size, num_heads, filter_size, 0.1)
+  model = TransformerXLModel(vocab_size, cutoffs + [vocab_size], stack_size, hidden_size, num_heads, filter_size, 0.1)
   #adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
 
   ckpt = tf.train.Checkpoint(model=model)#, adaptive_softmax=adaptive_softmax)
