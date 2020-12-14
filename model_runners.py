@@ -159,14 +159,47 @@ class TransformerXLModelEvaluator(object):
 
 
 class TransformerXLModelInferencer(object):
-  """"""
-  def __init__(self, model, m_seq_len):
-    """"""
+  """Make inference on the most likely (-ish) sequences of tokens that follow 
+  a primer sequence using TransformerXL model.
+  """
+  def __init__(self, model, m_seq_len, q_seq_len, batch_size):
+    """Constructor.
+
+    Args:
+      model: an instance of TransformerXL model.
+      m_seq_len: int scalar, length of the memory sequence.
+      batch_size: int scalar, batch_size.
+    """
     self._model = model
     self._m_seq_len = m_seq_len
+    self._q_seq_len = q_seq_len
+    self._batch_size = batch_size
+
 
   def infer(self, primer_token_ids):
-    """
+    batch_size = self._batch_size
+    stack_size = self._model._stack_size
+    q_seq_len = self._q_seq_len
+    m_seq_len = self._m_seq_len
+    hidden_size = self._model._hidden_size
+
+    memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
+
+    _, memories = self._model(primer_token_ids, memories, training)
+
+    for i in range(500):
+      if i == 0:
+        init_ids = primer_token_ids[:, q_seq_len:q_seq_len+1] 
+
+      outputs, memories = self._model(init_ids, memories, training=False):
+       
+
+  def infer(self, primer_token_ids):
+    """Generates text based on a primer sequence. 
+
+    Args:
+      primer_token_ids: numpy array of shape [batch_size, seq_len], storing the
+        token ids of a batch of primer sequences.
     """ 
     batch_size = primer_token_ids.shape[0]
     stack_size = self._model._stack_size

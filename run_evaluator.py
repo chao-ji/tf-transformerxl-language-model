@@ -5,7 +5,7 @@ import numpy as np
 from model import TransformerXLModel
 from model_runners import TransformerXLModelEvaluator
 
-dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/test.bsz-10.tlen-64.tfrecords')
+dataset = tf.data.TFRecordDataset('/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/tfrecords/valid.bsz-32.tlen-224.tfrecords')
 
 def parse_fn(serialized_example):
    parse_dict = {'inputs': tf.io.VarLenFeature(tf.int64),
@@ -15,7 +15,7 @@ def parse_fn(serialized_example):
    labels = tf.sparse.to_dense(parsed['labels'])
    return inputs, labels
 
-batch_size = 10 #10
+batch_size = 32 #10
 
 dataset = dataset.map(parse_fn).batch(batch_size)
 
