@@ -111,7 +111,8 @@ class TransformerXLModelTrainer(object):
 
 
 class TransformerXLModelEvaluator(object):
-  """Evaluates a TransformerXL model in terms of per-token perplexity."""
+  """Evaluates a trained TransformerXL model in terms of per-token perplexity.
+  """
   def __init__(self, model, m_seq_len, batch_size):
     """Constructor.
 
@@ -158,41 +159,80 @@ class TransformerXLModelEvaluator(object):
     return ppl
 
 
+def nucleus_sampling(scores, threshold=0.95):
+  ids = np.argsort(-scores)
+  cumsum = [0.] + np.cumsum(scores[ids]).tolist()
+  low, high = 0, len(scores) - 1
+
+  while low <= high:
+    mid = (low + high) // 2
+    sum1 = scores[ids[:mid]].sum()
+    sum2 = scores[ids[:mid+1]].sum()
+    if sum1 < threshold and sum2 >= threshold:
+      break
+    elif sum2 < threshold: 
+      low = mid + 1
+    elif sum1 >= threshold:
+      high = mid - 1
+  print(mid)
+  probs = scores[ids[:mid+1]] / sum2
+  return np.random.choice(ids[:mid+1], p=probs) 
+
+def topk_sampling(scores, k=40):
+  pass 
+
+
 class TransformerXLModelInferencer(object):
-  """Make inference on the most likely (-ish) sequences of tokens that follow 
-  a primer sequence using TransformerXL model.
+  """Make inference on the most likely (-ish) sequence of text that logically
+  and coherently follows a primer sequence based on a trained TransformerXL 
+  model.
   """
-  def __init__(self, model, m_seq_len, q_seq_len, batch_size):
+  def __init__(self, model, m_seq_len, batch_size, num_tokens=500):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
+      q_
       batch_size: int scalar, batch_size.
+      num_tokens: int scalar, num of tokens to be generated.
     """
     self._model = model
     self._m_seq_len = m_seq_len
-    self._q_seq_len = q_seq_len
     self._batch_size = batch_size
-
+    self._num_tokens = num_tokens
 
   def infer(self, primer_token_ids):
     batch_size = self._batch_size
     stack_size = self._model._stack_size
-    q_seq_len = self._q_seq_len
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
 
     memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
 
-    _, memories = self._model(primer_token_ids, memories, training)
-
-    for i in range(500):
+    _, memories = self._model(primer_token_ids[:, :-1], memories, training=False)
+    l = []
+    for i in range(self._num_tokens):
       if i == 0:
-        init_ids = primer_token_ids[:, q_seq_len:q_seq_len+1] 
+        init_ids = primer_token_ids[:, -1:]
 
-      outputs, memories = self._model(init_ids, memories, training=False):
-       
+      outputs, memories = self._model(init_ids, memories, training=False)
+      softmax = self._model._embedding_layer(outputs, mode='softmax')
+      #ids = np.argsort(-softmax.numpy()[0, 0]) 
+      #next_token_id = np.random.choice(ids[:5], 1)[0] 
+      next_token_id = nucleus_sampling(softmax.numpy()[0, 0])
+      l.append(next_token_id)
+      init_ids = tf.constant([[next_token_id]])
+
+    return l
+
+
+
+
+
+
+
+  '''
 
   def infer(self, primer_token_ids):
     """Generates text based on a primer sequence. 
@@ -217,3 +257,6 @@ class TransformerXLModelInferencer(object):
     out = self._model.predict(initial_ids, memories, scoring_fn)
 
     return out
+
+  '''
+

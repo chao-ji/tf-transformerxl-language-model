@@ -10,32 +10,36 @@ from model import TransformerXLModel
 from model_runners import TransformerXLModelInferencer
 
 if __name__ == '__main__':
-  stack_size = 8#6
+  stack_size = 9#6
   num_heads = 8
   hidden_size = 512
   filter_size = 2048
   training = False
   vocab_size = 267735
+  m_seq_len = 224 * 4#4096
+  q_seq_len = 224#4096
   cutoffs = [20000, 40000, 200000]
-  m_seq_len = 128
 
-  mems = tf.zeros([1, stack_size, m_seq_len, hidden_size], dtype='float32')
+  np.random.seed(0)
 
   model = TransformerXLModel(vocab_size, cutoffs + [vocab_size], stack_size, hidden_size, num_heads, filter_size, 0.1)
-  #adaptive_softmax = AdaptiveSoftmaxV1(hidden_size, cutoffs + [vocab_size])
 
-  ckpt = tf.train.Checkpoint(model=model)#, adaptive_softmax=adaptive_softmax)
+  ckpt = tf.train.Checkpoint(model=model)
   latest_ckpt = tf.train.latest_checkpoint('.')
   ckpt.restore(latest_ckpt).expect_partial()
   print('\n\n\n\n', latest_ckpt)
 
 
-  import functools 
-  #scoring_fn = functools.partial(adaptive_softmax, mode='softmax')
-  scoring_fn = functools.partial(model._embedding_layer, mode='softmax')
 
+  primer = ''
+  fn = '/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/test.txt'
 
-  primer = """Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the <unk> Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall .""".split()
+  with open(fn) as f:
+    for l in f:
+      primer += l[:-1]
+      if len(primer.split()) >= 128 * 60:
+        break
+
  
   rev_vocab = {'<eos>': 0}
   vocab = ['<eos>']
@@ -51,27 +55,20 @@ if __name__ == '__main__':
   def decode(id_list, vocab):
     return ' '.join([vocab[id_] for id_ in id_list])
 
+  primer = primer.split()
   text = encode(primer, rev_vocab)
-  inputs = tf.constant([text[:m_seq_len+1]], dtype='int32')
-  #labels = tf.constant([text[1:51]], dtype='int32')
-  #outputs, new_memories = model(inputs, mems, training)
 
-
-  #training_losses = adaptive_softmax(outputs, labels, 'loss')
-  #loss = tf.reduce_mean(tf.concat(training_losses, axis=0))
+  primer_token_ids = tf.constant([text[:m_seq_len + 1]])
 
    
-  #outputs, new_mems = model(inputs, mems, training)
+  inferencer = TransformerXLModelInferencer(model, m_seq_len, 1)
 
-  #########init = tf.argmax(adaptive_softmax(outputs, 'softmax')[0, -1]).numpy()
-  #########primer_seq_ids = tf.constant([[init]])
+  l = inferencer.infer(primer_token_ids)
 
-  #primer_seq_ids = tf.constant([text[50]], dtype='int32') 
-
-  #out = model.predict(primer_seq_ids, new_mems, scoring_fn)
+  a = decode(text[:m_seq_len], vocab)
+  c = decode(text[m_seq_len:], vocab)
+  b = decode(l, vocab)
  
-  inferencer = TransformerXLModelInferencer(model, m_seq_len)
 
-  out = inferencer.infer(inputs)
 
  
