@@ -1,5 +1,5 @@
-"""Defines Trainer and Evaluator class that wraps a TransformerXL model and 
-performs training, evaluation and inference, respectively.
+"""Defines Trainer, Evaluator and Inferencer class that wraps a TransformerXL 
+model and performs training, evaluation and inference, respectively.
 """
 import functools
 import os
@@ -150,35 +150,44 @@ class TransformerXLModelEvaluator(object):
 
     for inputs, labels in dataset:
       loss, memories = eval_step(inputs, memories, labels)
-
       loss_list.append(loss.numpy())
-      if len(loss_list) % 1000 == 0:
-        print(len(loss_list))
 
     ppl = np.exp(np.mean(loss_list))    
     return ppl
 
 
 def nucleus_sampling(scores, threshold=0.95):
+  """Sample from the head of the probability distribution that contains the 
+  vast majority of probability mass. See https://arxiv.org/abs/1904.09751 
+  for details. 
+
+  Args:
+    scores: numpy array of shape [vocab_size], the probability distribution (
+      sum to one) of all possible next-tokens over the vocabulary.
+    threshold: float scalar, the minimum value of the sum of probability mass
+      that the head of the distribution must exceed. 
+  """
   ids = np.argsort(-scores)
   cumsum = [0.] + np.cumsum(scores[ids]).tolist()
-  low, high = 0, len(scores) - 1
+  low, high = 0, len(cumsum) - 2
 
   while low <= high:
     mid = (low + high) // 2
-    sum1 = scores[ids[:mid]].sum()
-    sum2 = scores[ids[:mid+1]].sum()
+    sum1 = cumsum[mid]
+    sum2 = cumsum[mid + 1]
     if sum1 < threshold and sum2 >= threshold:
       break
-    elif sum2 < threshold: 
+    elif sum2 < threshold: # rule out indices <= `mid` 
       low = mid + 1
-    elif sum1 >= threshold:
+    elif sum1 >= threshold: # rule out indices >= `mid`
       high = mid - 1
-  print(mid)
-  probs = scores[ids[:mid+1]] / sum2
-  return np.random.choice(ids[:mid+1], p=probs) 
+
+  probs = scores[ids[:mid + 1]] / sum2
+  return np.random.choice(ids[:mid + 1], p=probs) 
 
 def topk_sampling(scores, k=40):
+  """
+  """
   pass 
 
 
