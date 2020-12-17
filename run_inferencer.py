@@ -61,7 +61,7 @@ if __name__ == '__main__':
   primer_token_ids = tf.constant([text[:m_seq_len + 1]])
 
    
-  inferencer = TransformerXLModelInferencer(model, m_seq_len, 1)
+  inferencer = TransformerXLModelInferencer(model, m_seq_len, 1, 'nucleus')
 
   l = inferencer.infer(primer_token_ids)
 

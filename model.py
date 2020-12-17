@@ -32,7 +32,7 @@ class Attention(tf.keras.layers.Layer):
         num_heads, self._size_per_head, mode='split')
     self._dense_layer_value = Projection(
         num_heads, self._size_per_head, mode='split')
-    self._dense_layer_relpos = Projection(
+    self._dense_layer_r = Projection(
         num_heads, self._size_per_head, mode='split')
     self._dense_layer_output = Projection(
         num_heads, self._size_per_head, mode='merge')
@@ -107,7 +107,7 @@ class Attention(tf.keras.layers.Layer):
                         key)
     positions = tf.einsum('NQHS,RHS->NHQR', 
                           query + position_bias, 
-                          self._dense_layer_relpos(positional_encoding)[0])
+                          self._dense_layer_r(positional_encoding)[0])
     positions = utils.rel_shift(positions)
 
     # [batch_size, num_heads, q_seq_len, q_seq_len + m_seq_len]
@@ -278,7 +278,7 @@ class TransformerXLModel(tf.keras.Model):
     embeddings = self._embedding_layer(inputs, mode='embedding')
 
     # [1, 1, q_seq_len, q_seq_len + m_seq_len]
-    attn_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
+    attention_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
 
     # [q_seq_len + m_seq_len, hidden_size] 
     positional_encoding = utils.get_positional_encoding(
@@ -290,9 +290,56 @@ class TransformerXLModel(tf.keras.Model):
 
     for i in range(self._stack_size): 
       new_memories.append(utils.cache_memory(memories[:, i], embeddings))
-      embeddings = self._stack[i](
-          embeddings, positional_encoding, attn_mask, memories[:, i], training)
+      embeddings = self._stack[i](embeddings, 
+          positional_encoding, attention_mask, memories[:, i], training)
 
     outputs = self._dropout_layer(embeddings, training=training)
     new_memories = tf.stack(new_memories, axis=1)
     return outputs, new_memories
+
+  def predict(self, initial_ids, mems, scoring_fn):
+    decoding_fn = self._build_decoding_fn(scoring_fn)
+    batch_size = initial_ids.shape[0]
+    max_length = self._max_length = 512
+
+    decoding_cache = {'memories': mems}
+
+    self._beam_width = 4
+    self._alpha = 0.6
+
+    bs = beam_search.BeamSearch(decoding_fn,
+                                self._vocab_size,
+                                batch_size,
+                                self._beam_width,
+                                self._alpha,
+                                max_length,
+                                12312434343)
+
+    out = bs.search(initial_ids, decoding_cache)
+    return out
+
+  def _build_decoding_fn(self, scoring_fn):
+    def decoding_fn(decoder_input, cache, **kwargs):
+      """
+      """
+      memories = cache['memories']
+      m_seq_len = tf.shape(memories)[2]
+      q_seq_len = tf.shape(decoder_input)[1]
+      new_memories = []
+
+      embeddings = self._embedding_layer(decoder_input, mode='embedding')
+      attention_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
+      positional_encoding = utils.get_positional_encoding(
+          m_seq_len + q_seq_len, self._hidden_size)
+
+      for i in range(self._stack_size):
+        new_memories.append(utils.cache_memory(memories[:, i], embeddings))
+        embeddings = self._stack[i](
+            embeddings, positional_encoding, attention_mask, memories[:, i], training=False)
+      scores = scoring_fn(embeddings)
+
+      cache['memories'] = tf.stack(new_memories, axis=1)
+      
+      scores = tf.squeeze(scores, axis=1)
+      return scores, cache
+    return decoding_fn

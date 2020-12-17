@@ -2,6 +2,7 @@
 model and performs training, evaluation and inference, respectively.
 """
 import functools
+import heapq
 import os
 
 import numpy as np
@@ -159,16 +160,20 @@ class TransformerXLModelEvaluator(object):
 def nucleus_sampling(scores, threshold=0.95):
   """Sample from the head of the probability distribution that contains the 
   vast majority of probability mass. See https://arxiv.org/abs/1904.09751 
-  for details. 
+  for details. The distribution is truncated and re-normalized.
 
   Args:
     scores: numpy array of shape [vocab_size], the probability distribution (
       sum to one) of all possible next-tokens over the vocabulary.
     threshold: float scalar, the minimum value of the sum of probability mass
       that the head of the distribution must exceed. 
+
+  Returns:
+    next_token_id: int scalar, the sampled id of the next token.
   """
   ids = np.argsort(-scores)
   cumsum = [0.] + np.cumsum(scores[ids]).tolist()
+  # search space is any value >= low and <= high
   low, high = 0, len(cumsum) - 2
 
   while low <= high:
@@ -177,32 +182,56 @@ def nucleus_sampling(scores, threshold=0.95):
     sum2 = cumsum[mid + 1]
     if sum1 < threshold and sum2 >= threshold:
       break
-    elif sum2 < threshold: # rule out indices <= `mid` 
+    elif sum2 < threshold: # exclude indices <= mid 
       low = mid + 1
-    elif sum1 >= threshold: # rule out indices >= `mid`
+    elif sum1 >= threshold: # exclude indices >= mid
       high = mid - 1
+    else:
+      raise ValueError('Impossible outcome')
 
   probs = scores[ids[:mid + 1]] / sum2
-  return np.random.choice(ids[:mid + 1], p=probs) 
+  next_token_id = np.random.choice(ids[:mid + 1], p=probs) 
+  return next_token_id
+
 
 def topk_sampling(scores, k=40):
+  """Sample from the top-k tokens with the largest probability. The distribution 
+  is truncated and re-normalized.
+
+  Args:
+    scores: numpy array of shape [vocab_size], the probability distribution (
+      sum to one) of all possible next-tokens over the vocabulary.
+    k: int scalar, the num of next-tokens with largest probability to sample 
+      from.
+
+  Returns:
+    next_token_id: int scalar, the sampled id of the next token.
   """
-  """
-  pass 
+  min_pq = list(zip(scores[:k], range(k)))
+  heapq.heapify(min_pq)
+  for i in np.arange(k, len(scores)):
+    if scores[i] > min_pq[0][0]:
+      min_pq[0] = scores[i], i
+      heapq.heapify(min_pq) 
+
+  probs, ids = list(zip(*min_pq))
+  probs = np.array(probs)
+  probs /= probs.sum()
+  next_token_id = np.random.choice(ids, p=probs)
+  return next_token_id
 
 
 class TransformerXLModelInferencer(object):
   """Make inference on the most likely (-ish) sequence of text that logically
-  and coherently follows a primer sequence based on a trained TransformerXL 
-  model.
+  and coherently follows a primer sequence (i.e. context) based on a trained 
+  TransformerXL model.
   """
-  def __init__(self, model, m_seq_len, batch_size, num_tokens=500):
+  def __init__(self, model, m_seq_len, batch_size, decoding_method, num_tokens=500):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
-      q_
       batch_size: int scalar, batch_size.
       num_tokens: int scalar, num of tokens to be generated.
     """
@@ -210,6 +239,7 @@ class TransformerXLModelInferencer(object):
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
     self._num_tokens = num_tokens
+    self._decoding_method = decoding_method
 
   def infer(self, primer_token_ids):
     batch_size = self._batch_size
@@ -218,31 +248,39 @@ class TransformerXLModelInferencer(object):
     hidden_size = self._model._hidden_size
 
     memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
-
     _, memories = self._model(primer_token_ids[:, :-1], memories, training=False)
-    l = []
-    for i in range(self._num_tokens):
-      if i == 0:
-        init_ids = primer_token_ids[:, -1:]
 
-      outputs, memories = self._model(init_ids, memories, training=False)
-      softmax = self._model._embedding_layer(outputs, mode='softmax')
-      #ids = np.argsort(-softmax.numpy()[0, 0]) 
-      #next_token_id = np.random.choice(ids[:5], 1)[0] 
-      next_token_id = nucleus_sampling(softmax.numpy()[0, 0])
-      l.append(next_token_id)
-      init_ids = tf.constant([[next_token_id]])
+    if self._decoding_method != 'beam_search':
+      if self._decoding_method == 'nucleus':
+        sampling_fn = nucleus_sampling
+      elif self._decoding_method == 'topk':
+        sampling_fn = topk_sampling
+      
+      l = []
+      for i in range(self._num_tokens):
+        if i == 0:
+          init_ids = primer_token_ids[:, -1:]
+
+        outputs, memories = self._model(init_ids, memories, training=False)
+        softmax = self._model._embedding_layer(outputs, mode='softmax')
+        #ids = np.argsort(-softmax.numpy()[0, 0]) 
+        #next_token_id = np.random.choice(ids[:5], 1)[0] 
+        #next_token_id = nucleus_sampling(softmax.numpy()[0, 0])
+        next_token_id = sampling_fn(softmax.numpy()[0, 0])
+        l.append(next_token_id)
+        init_ids = tf.constant([[next_token_id]])
+    elif self._decoding_method == 'beam_search':
+      scoring_fn = functools.partial(self._model._embedding_layer, mode='softmax')
+      initial_ids = primer_token_ids[:, -1]
+
+      l = self._model.predict(initial_ids, memories, scoring_fn)
+
+      l = l[0][0, 0].numpy()
+
 
     return l
 
-
-
-
-
-
-
-  '''
-
+'''
   def infer(self, primer_token_ids):
     """Generates text based on a primer sequence. 
 
@@ -250,22 +288,22 @@ class TransformerXLModelInferencer(object):
       primer_token_ids: numpy array of shape [batch_size, seq_len], storing the
         token ids of a batch of primer sequences.
     """ 
-    batch_size = primer_token_ids.shape[0]
+    batch_size = self._batch_size 
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
 
     memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
 
-    print(primer_token_ids[:, :-1].shape, primer_token_ids[:, :-1].numpy().mean(), memories.shape)
-    outputs, memories = self._model(primer_token_ids[:, :-1], memories, False)
-    print(memories.numpy().mean()) 
+    #print(primer_token_ids[:, :-1].shape, primer_token_ids[:, :-1].numpy().mean(), memories.shape)
+    _, memories = self._model(primer_token_ids[:, :-1], memories, training=False)
+
     scoring_fn = functools.partial(self._model._embedding_layer, mode='softmax')
     initial_ids = primer_token_ids[:, -1]
 
     out = self._model.predict(initial_ids, memories, scoring_fn)
 
+    out = out[0][0, 0].numpy()
     return out
 
-  '''
-
+'''
