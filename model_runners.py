@@ -2,26 +2,37 @@
 model and performs training, evaluation and inference, respectively.
 """
 import functools
-import heapq
 import os
 
 import numpy as np
 import tensorflow as tf
+from commons import beam_search
+from commons import utils
 
 
 class TransformerXLModelTrainer(object):
   """Trains a TransformerXL model."""
-  def __init__(self, model, m_seq_len, batch_size):
+  def __init__(self, 
+               model, 
+               m_seq_len,
+               batch_size, 
+               vocab_size, 
+               adaptive_embedding):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
-      batch_size: int scalar, batch_size.
+      batch_size: int scalar, batch size.
+      vocab_size: int scalar, num of entries in the vocabulary.
+      adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
+        softmax) layer.
     """
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
+    self._vocab_size = vocab_size
+    self._adaptive_embedding = adaptive_embedding
 
   def train(self,
             dataset,
@@ -68,7 +79,13 @@ class TransformerXLModelTrainer(object):
     def train_step(inputs, memories, labels):
       with tf.GradientTape() as tape:
         outputs, new_memories = self._model(inputs, memories)
-        losses = self._model._embedding_layer(outputs, labels, mode='loss')
+        if self._adaptive_embedding:
+          losses = self._model._embedding_layer(outputs, labels, mode='loss')
+        else:
+          logits = self._model._embedding_layer(outputs, mode='logits')
+          losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
+              labels=labels, logits=logits)
+
         loss = tf.reduce_mean(losses)
 
       trainable_variables = self._model.trainable_variables
@@ -114,17 +131,22 @@ class TransformerXLModelTrainer(object):
 class TransformerXLModelEvaluator(object):
   """Evaluates a trained TransformerXL model in terms of per-token perplexity.
   """
-  def __init__(self, model, m_seq_len, batch_size):
+  def __init__(self, model, m_seq_len, batch_size, vocab_size, adaptive_embedding):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
-      batch_size: int scalar, batch_size.    
+      batch_size: int scalar, batch size.    
+      vocab_size: int scalar, num of entries in the vocabulary.
+      adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
+        softmax) layer.
     """
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
+    self._vocab_size = vocab_size
+    self._adaptive_embedding = adaptive_embedding
 
   def evaluate(self, dataset):
     """Iterate through the validation dataset and compute the perplexity.
@@ -133,7 +155,7 @@ class TransformerXLModelEvaluator(object):
       dataset: a tf.data.Dataset instance, the input data generator.
 
     Returns:
-      ppl: float scalar, the average per-token perplexity.
+      perplexity: float scalar, the average per-token perplexity.
     """
     batch_size = self._batch_size
     stack_size = self._model._stack_size
@@ -145,165 +167,127 @@ class TransformerXLModelEvaluator(object):
     loss_list = []
     def eval_step(inputs, memories, labels):
       outputs, memories = self._model(inputs, memories, training=False)
-      losses = self._model._embedding_layer(outputs, labels, mode='loss')
+      if self._adaptive_embedding:
+        losses = self._model._embedding_layer(outputs, labels, mode='loss')
+      else:
+        logits = self._model._embedding_layer(outputs, mode='logits')
+        losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=labels, logits=logits)
+
       loss = tf.reduce_mean(losses)
+
       return loss, memories
 
     for inputs, labels in dataset:
       loss, memories = eval_step(inputs, memories, labels)
       loss_list.append(loss.numpy())
 
-    ppl = np.exp(np.mean(loss_list))    
-    return ppl
-
-
-def nucleus_sampling(scores, threshold=0.95):
-  """Sample from the head of the probability distribution that contains the 
-  vast majority of probability mass. See https://arxiv.org/abs/1904.09751 
-  for details. The distribution is truncated and re-normalized.
-
-  Args:
-    scores: numpy array of shape [vocab_size], the probability distribution (
-      sum to one) of all possible next-tokens over the vocabulary.
-    threshold: float scalar, the minimum value of the sum of probability mass
-      that the head of the distribution must exceed. 
-
-  Returns:
-    next_token_id: int scalar, the sampled id of the next token.
-  """
-  ids = np.argsort(-scores)
-  cumsum = [0.] + np.cumsum(scores[ids]).tolist()
-  # search space is any value >= low and <= high
-  low, high = 0, len(cumsum) - 2
-
-  while low <= high:
-    mid = (low + high) // 2
-    sum1 = cumsum[mid]
-    sum2 = cumsum[mid + 1]
-    if sum1 < threshold and sum2 >= threshold:
-      break
-    elif sum2 < threshold: # exclude indices <= mid 
-      low = mid + 1
-    elif sum1 >= threshold: # exclude indices >= mid
-      high = mid - 1
-    else:
-      raise ValueError('Impossible outcome')
-
-  probs = scores[ids[:mid + 1]] / sum2
-  next_token_id = np.random.choice(ids[:mid + 1], p=probs) 
-  return next_token_id
-
-
-def topk_sampling(scores, k=40):
-  """Sample from the top-k tokens with the largest probability. The distribution 
-  is truncated and re-normalized.
-
-  Args:
-    scores: numpy array of shape [vocab_size], the probability distribution (
-      sum to one) of all possible next-tokens over the vocabulary.
-    k: int scalar, the num of next-tokens with largest probability to sample 
-      from.
-
-  Returns:
-    next_token_id: int scalar, the sampled id of the next token.
-  """
-  min_pq = list(zip(scores[:k], range(k)))
-  heapq.heapify(min_pq)
-  for i in np.arange(k, len(scores)):
-    if scores[i] > min_pq[0][0]:
-      min_pq[0] = scores[i], i
-      heapq.heapify(min_pq) 
-
-  probs, ids = list(zip(*min_pq))
-  probs = np.array(probs)
-  probs /= probs.sum()
-  next_token_id = np.random.choice(ids, p=probs)
-  return next_token_id
+    perplexity = np.exp(np.mean(loss_list))    
+    return perplexity 
 
 
 class TransformerXLModelInferencer(object):
   """Make inference on the most likely (-ish) sequence of text that logically
-  and coherently follows a primer sequence (i.e. context) based on a trained 
-  TransformerXL model.
+  and coherently follows a prompt (i.e. a piece of text that gives a "context") 
+  based on a trained TransformerXL model.
   """
-  def __init__(self, model, m_seq_len, batch_size, decoding_method, num_tokens=500):
+  def __init__(self, 
+               model, 
+               m_seq_len, 
+               batch_size,
+               vocab_size, 
+               adaptive_embedding,
+               decoding_method, 
+               num_tokens=512,
+               beam_width=4,
+               alpha=0.6):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
       batch_size: int scalar, batch_size.
+      vocab_size: int scalar, num of entries in the vocabulary.
+      adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
+        softmax) layer.
+      decoding_method: string scalar, decoding method. Must be "nucleus", 'topk'
+        or "beam_search".
       num_tokens: int scalar, num of tokens to be generated.
+      beam_width: int scalar, number of beams for beam search. Ignored if 
+        decoding method is not beam search.
+      alpha: float scalar, defining the strength of length normalization. 
+        Ignored if decoding method is not beam search.
     """
+    if decoding_method not in ('nucleus', 'topk', 'beam_search'):
+      raise ValueError('`decoding_method` must be either nucleus, topk or '
+          'beam_search, got %s' % decoding_method)
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
-    self._num_tokens = num_tokens
+    self._vocab_size = vocab_size
+    self._adaptive_embedding = adaptive_embedding
     self._decoding_method = decoding_method
+    self._num_tokens = num_tokens
+    self._beam_width = beam_width
+    self._alpha = alpha
 
-  def infer(self, primer_token_ids):
+  def infer(self, prompt_token_ids):
+    """Generate text based on the prompted text.
+
+    Args:
+      prompt_token_ids: int tensor of shape [1, seq_len], token ids of the 
+        prompted text.
+
+    Returns:
+      token_id_list: a list of integers, the token ids of the generated text. 
+    """
     batch_size = self._batch_size
     stack_size = self._model._stack_size
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
 
-    memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
-    _, memories = self._model(primer_token_ids[:, :-1], memories, training=False)
+    memories = tf.zeros(
+        [batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
+    _, memories = self._model(
+        prompt_token_ids[:, :-1], memories, training=False)
 
     if self._decoding_method != 'beam_search':
       if self._decoding_method == 'nucleus':
-        sampling_fn = nucleus_sampling
-      elif self._decoding_method == 'topk':
-        sampling_fn = topk_sampling
+        sampling_fn = utils.nucleus_sampling
+      else:
+        sampling_fn = utils.topk_sampling
       
-      l = []
+      token_id_list = []
       for i in range(self._num_tokens):
         if i == 0:
-          init_ids = primer_token_ids[:, -1:]
+          init_ids = prompt_token_ids[:, -1:]
 
         outputs, memories = self._model(init_ids, memories, training=False)
-        softmax = self._model._embedding_layer(outputs, mode='softmax')
-        #ids = np.argsort(-softmax.numpy()[0, 0]) 
-        #next_token_id = np.random.choice(ids[:5], 1)[0] 
-        #next_token_id = nucleus_sampling(softmax.numpy()[0, 0])
-        next_token_id = sampling_fn(softmax.numpy()[0, 0])
-        l.append(next_token_id)
+        if self._adaptive_embedding:
+          scores = self._model._embedding_layer(outputs, mode='softmax')
+        else:
+          scores = self._model._embedding_layer(outputs, mode='logits')
+
+        next_token_id = sampling_fn(scores.numpy()[0, 0])
+        token_id_list.append(next_token_id)
         init_ids = tf.constant([[next_token_id]])
-    elif self._decoding_method == 'beam_search':
-      scoring_fn = functools.partial(self._model._embedding_layer, mode='softmax')
-      initial_ids = primer_token_ids[:, -1]
+    else:
+      scoring_fn = functools.partial(
+          self._model._embedding_layer, mode='softmax')
+      initial_ids = prompt_token_ids[:, -1]
 
-      l = self._model.predict(initial_ids, memories, scoring_fn)
+      decoding_fn = self._model._build_decoding_fn(scoring_fn)
+      decoding_cache = {'memories': memories}
+      bs = beam_search.BeamSearch(decoding_fn,
+                                self._vocab_size,
+                                batch_size,
+                                self._beam_width,
+                                self._alpha,
+                                self._num_tokens,
+                                -1,
+                                logits_as_scores=False)
 
-      l = l[0][0, 0].numpy()
+      outputs, _, _ = bs.search(initial_ids, decoding_cache)
+      token_id_list = outputs[0, 0].numpy().tolist()
 
-
-    return l
-
-'''
-  def infer(self, primer_token_ids):
-    """Generates text based on a primer sequence. 
-
-    Args:
-      primer_token_ids: numpy array of shape [batch_size, seq_len], storing the
-        token ids of a batch of primer sequences.
-    """ 
-    batch_size = self._batch_size 
-    stack_size = self._model._stack_size
-    m_seq_len = self._m_seq_len
-    hidden_size = self._model._hidden_size
-
-    memories = tf.zeros([batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
-
-    #print(primer_token_ids[:, :-1].shape, primer_token_ids[:, :-1].numpy().mean(), memories.shape)
-    _, memories = self._model(primer_token_ids[:, :-1], memories, training=False)
-
-    scoring_fn = functools.partial(self._model._embedding_layer, mode='softmax')
-    initial_ids = primer_token_ids[:, -1]
-
-    out = self._model.predict(initial_ids, memories, scoring_fn)
-
-    out = out[0][0, 0].numpy()
-    return out
-
-'''
+    return token_id_list

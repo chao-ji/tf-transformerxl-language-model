@@ -2,11 +2,9 @@
 import tensorflow as tf
 
 import utils
-from commons.layers import AdaptiveInputSoftmax
 from commons.layers import Projection
 from commons.layers import FeedForwardNetwork 
 from commons.beam_search import NEG_INF
-from commons import beam_search
 
 
 class Attention(tf.keras.layers.Layer): 
@@ -199,8 +197,7 @@ class TransformerXLModel(tf.keras.Model):
   https://arxiv.org/abs/1706.03762
   """
   def __init__(self,
-               vocab_size,
-               cutoffs,
+               embedding_layer,
                stack_size=6,
                hidden_size=512,
                num_heads=8,
@@ -210,14 +207,9 @@ class TransformerXLModel(tf.keras.Model):
     """Constructor.
 
     Args:
-      vocab_size: int scalar, num of entries in the vocabulary.
-      cutoffs: list of ints, the boundaries of token indices (tokens are sorted 
-        in descending order of frequencies in the vocabulary) with which to 
-        split the set of tokens into a head partition and potentially multiple 
-        tail partitions. For example, for `cutoff` = [b0, b1, ..., V], where `V` 
-        is the vocabulary size, the head contains tokens with indices in 
-        `[0, b0)`, and first tail contains tokens with indices in `[b0, b1)`, 
-        and so on.
+      embedding_layer: callable, the keras layer that converts token ids (int 
+        tensor of shape [batch_size, seq_len]) into embedding vectors (float
+        tensor of shape [batch_size, seq_len, hidden_size]).  
       stack_size: int scalar, num of layers in the decoder stack.
       hidden_size: int scalar, the hidden size of continuous representation.
       num_heads: int scalar, num of attention heads.
@@ -228,8 +220,7 @@ class TransformerXLModel(tf.keras.Model):
         query-to-reference attention matrix. 
     """
     super(TransformerXLModel, self).__init__()
-    self._vocab_size = vocab_size
-    self._cutoffs = cutoffs
+    self._embedding_layer = embedding_layer
     self._stack_size = stack_size
     self._hidden_size = hidden_size
     self._num_heads = num_heads
@@ -237,7 +228,6 @@ class TransformerXLModel(tf.keras.Model):
     self._dropout_rate = dropout_rate
     self._dropout_rate_attention = dropout_rate_attention
 
-    self._embedding_layer = AdaptiveInputSoftmax(hidden_size, cutoffs)
     self._embeddings_dropout_layer = tf.keras.layers.Dropout(dropout_rate)
     self._positional_encoding_dropout_layer = tf.keras.layers.Dropout(
         dropout_rate)
@@ -252,13 +242,13 @@ class TransformerXLModel(tf.keras.Model):
   def call(self, inputs, memories, training=True):
     """Takes as input the token ids of a batch of sequence segments as well
     as the embeddings of tokens from the previous sequence segment, and 
-    computes the embedding vectors of the immmediate "next" tokens of each token
+    computes the embedding vectors of the immediate "next" tokens of each token
     in inputs.
 
     Args:
       inputs: int tensor of shape [batch_size, q_seq_len], token ids of the 
         input sequence segment.
-      memories: float tensor of shape [batch_size, num_layers, m_seq_len, 
+      memories: float tensor of shape [batch_size, stach_size, m_seq_len, 
         hidden_size], embeddings of the tokens from the previous sequence 
         segment for each layer of the decoder stack.
       training: bool scalar, True if in training mode. 
@@ -266,9 +256,69 @@ class TransformerXLModel(tf.keras.Model):
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
         final embedding vectors of the input sequence segment. 
-      new_memories: float tensor of shape [batch_size, num_layers, m_seq_len, 
+      new_memories: float tensor of shape [batch_size, stack_size, m_seq_len, 
         hidden_size], the updated embedding vectors of the memory sequence 
         segment. 
+    """
+    embeddings, new_memories = self._get_final_embeddings(
+        inputs, memories, training)
+    outputs = self._dropout_layer(embeddings, training=training)
+    return outputs, new_memories
+
+  def _build_decoding_fn(self, scoring_fn):
+    """Builds a callback function needed for beam search.
+
+    Args:
+      scoring_fn: a callable that converts the embedding vectors (float tensor 
+        of shape [batch_size, seq_len, hidden_size]) to scores (float tensor of 
+        shape [batch_size, seq_len, vocab_size], i.e. logits or softmax'ed 
+        probabilities)
+
+    Returns:
+      decoding_fn: a callable that outputs the scores of the next decoded token
+        ids.
+    """
+    def decoding_fn(decoder_input, cache, **kwargs):
+      """Computes the scores of the next decoded token ids.
+
+      Args:
+        decoder_input: int tensor of shape [batch_size * beam_width, 1], the 
+          decoded tokens at index `i`.
+        cache: dict of entries:
+          'memories': float tensor of shape [batch_size, stack_size, m_seq_len, 
+            hidden_size], embeddings of the tokens from the previous sequence 
+            segment for each layer of the decoder stack. 
+
+      Returns:
+        scores: float tensor of shape [batch_size * beam_width, vocab_size].
+        cache: a dict with the same structure as the input `cache`.
+      """
+      embeddings, new_memories = self._get_final_embeddings(
+          decoder_input, cache['memories'], training=False)
+      cache['memories'] = new_memories 
+      scores = tf.squeeze(scoring_fn(embeddings), axis=1)
+      return scores, cache
+
+    return decoding_fn
+
+  def _get_final_embeddings(self, inputs, memories, training):
+    """Computes the final embedding vectors coming off the top layer of 
+    TransformerXL model.
+
+    Args:
+      inputs: int tensor of shape [batch_size, q_seq_len], token ids of the 
+        input sequence segment.
+      memories: float tensor of shape [batch_size, stack_size, m_seq_len, 
+        hidden_size], embeddings of the tokens from the previous sequence 
+        segment for each layer of the decoder stack.
+      training: bool scalar, True if in training mode. 
+
+    Returns:
+      embeddings: float tensor of shape [batch_size, q_seq_len, hidden_size],
+        the final embeddings of inputs.
+      new_memories: float tensor of shape [batch_size, stack_size, m_seq_len, 
+        hidden_size], the updated embedding vectors of the memory sequence 
+        segment.
     """
     m_seq_len = tf.shape(memories)[2]
     q_seq_len = tf.shape(inputs)[1]
@@ -282,64 +332,19 @@ class TransformerXLModel(tf.keras.Model):
 
     # [q_seq_len + m_seq_len, hidden_size] 
     positional_encoding = utils.get_positional_encoding(
-        m_seq_len + q_seq_len, self._hidden_size) 
+          m_seq_len + q_seq_len, self._hidden_size)
+    
     embeddings = self._embeddings_dropout_layer(
         embeddings, training=training)
     positional_encoding = self._positional_encoding_dropout_layer(
         positional_encoding, training=training)
 
-    for i in range(self._stack_size): 
+    for i in range(self._stack_size):
       new_memories.append(utils.cache_memory(memories[:, i], embeddings))
       embeddings = self._stack[i](embeddings, 
-          positional_encoding, attention_mask, memories[:, i], training)
-
-    outputs = self._dropout_layer(embeddings, training=training)
+                                  positional_encoding, 
+                                  attention_mask, 
+                                  memories[:, i], 
+                                  training=training)
     new_memories = tf.stack(new_memories, axis=1)
-    return outputs, new_memories
-
-  def predict(self, initial_ids, mems, scoring_fn):
-    decoding_fn = self._build_decoding_fn(scoring_fn)
-    batch_size = initial_ids.shape[0]
-    max_length = self._max_length = 512
-
-    decoding_cache = {'memories': mems}
-
-    self._beam_width = 4
-    self._alpha = 0.6
-
-    bs = beam_search.BeamSearch(decoding_fn,
-                                self._vocab_size,
-                                batch_size,
-                                self._beam_width,
-                                self._alpha,
-                                max_length,
-                                12312434343)
-
-    out = bs.search(initial_ids, decoding_cache)
-    return out
-
-  def _build_decoding_fn(self, scoring_fn):
-    def decoding_fn(decoder_input, cache, **kwargs):
-      """
-      """
-      memories = cache['memories']
-      m_seq_len = tf.shape(memories)[2]
-      q_seq_len = tf.shape(decoder_input)[1]
-      new_memories = []
-
-      embeddings = self._embedding_layer(decoder_input, mode='embedding')
-      attention_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
-      positional_encoding = utils.get_positional_encoding(
-          m_seq_len + q_seq_len, self._hidden_size)
-
-      for i in range(self._stack_size):
-        new_memories.append(utils.cache_memory(memories[:, i], embeddings))
-        embeddings = self._stack[i](
-            embeddings, positional_encoding, attention_mask, memories[:, i], training=False)
-      scores = scoring_fn(embeddings)
-
-      cache['memories'] = tf.stack(new_memories, axis=1)
-      
-      scores = tf.squeeze(scores, axis=1)
-      return scores, cache
-    return decoding_fn
+    return embeddings, new_memories

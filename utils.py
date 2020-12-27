@@ -1,7 +1,5 @@
-"""
-"""
+"""Defines utility functions."""
 import tensorflow as tf
-import numpy as np
 
 
 def get_positional_encoding(seq_len, hidden_size):
@@ -93,37 +91,20 @@ def rel_shift(inputs):
   outputs = tf.reshape(sliced, shape)
   return outputs
 
-
-class LearningRateSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-  def __init__(self, learning_rate, decay_steps, alpha, warmup_steps, warmup_lr):
-    super(LearningRateSchedule, self).__init__()
-    self._learning_rate = learning_rate
-    self._decay_steps = decay_steps
-    self._alpha = alpha
-    self._warmup_steps = warmup_steps
-    self._warmup_lr = warmup_lr
-
-  def __call__(self, global_step):
-    global_step = tf.cast(global_step, 'float32')
-
-    cosine_decay = 0.5 * (1 + tf.cos(np.pi * tf.minimum(global_step 
-        - self._warmup_steps, self._decay_steps) / self._decay_steps))
-    decayed = (1 - self._alpha) * cosine_decay + self._alpha
-    decayed_learning_rate = self._learning_rate * decayed
-
-    decayed_learning_rate = tf.where(global_step < self._warmup_steps, 
-                                     self._warmup_lr, 
-                                     decayed_learning_rate)
-
-    return decayed_learning_rate
-
    
 def cache_memory(memory, embeddings, m_seq_len=None):
-  """
+  """Cache the memory for the next segment.
+
   Args:
+    memory: float tensor of shape [batch_size, m_seq_len, hidden_size], memory
+      for the current segment.
+    embeddings: float tensor of shape [batch_size, q_seq_len, hidden_size], 
+      embedding vectors for the input tokens.
+    m_seq_len: int scalar, num of time steps to be cached.
 
   Returns:
-    
+    new_memory: float tensor of shape [batch_size, m_seq_len], memory cached
+      for the next segment.
   """
   if m_seq_len is None:
     m_seq_len = tf.shape(memory)[1] #.shape[1]
