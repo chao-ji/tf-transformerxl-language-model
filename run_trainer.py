@@ -1,4 +1,5 @@
 """Pipeline for training a TransformerXL model for language modeling."""
+import functools
 import json
 import os
 
@@ -11,6 +12,7 @@ from model_runners import TransformerXLModelTrainer
 from commons.utils import CosineDecayLearningRateSchedule
 from commons.layers import AdaptiveInputSoftmax
 from commons.layers import EmbeddingLayer
+from commons.dataset import parse_fn_sequence_pair
 from commons import tokenization
 
 
@@ -74,27 +76,6 @@ flags.DEFINE_integer(
 FLAGS = flags.FLAGS
 
 
-def parse_fn(serialized_example):
-  """Function that parses a serialized example.
-
-  Args:
-    serialized_example: string scalar tensor, serialized example containing one 
-      training example.
-
-  Returns:
-    inputs: int tensor of shape [seq_len], input token ids. 
-    labels: int tensor of shape [seq_len], ids for next tokens.
-  """
-  parse_dict = {'inputs': tf.io.VarLenFeature(tf.int64),
-                'labels': tf.io.VarLenFeature(tf.int64)}
-  parsed = tf.io.parse_single_example(serialized_example, parse_dict)
-  inputs = tf.sparse.to_dense(parsed['inputs'])
-  labels = tf.sparse.to_dense(parsed['labels'])
-  inputs = tf.cast(inputs, 'int32')
-  labels = tf.cast(labels, 'int32')
-  return inputs, labels
-
-
 def main(_):
   filename = FLAGS.filename
   vocab_path = FLAGS.vocab_path
@@ -150,6 +131,9 @@ def main(_):
                              dropout_rate_attention=dropout_rate_attention)
 
   # training datset
+  parse_fn = functools.partial(parse_fn_sequence_pair, 
+                               keys=('inputs', 'labels'),
+                               dtype='int32')
   dataset = tf.data.TFRecordDataset(filename + '.tfrecord')
   dataset = dataset.map(parse_fn).repeat().batch(batch_size)
 

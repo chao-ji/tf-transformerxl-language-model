@@ -1,5 +1,6 @@
 """Pipeline for evaluating a trained TransformerXL model for language modeling.
 """
+import functools
 import json
 import os
 
@@ -11,6 +12,7 @@ from model import TransformerXLModel
 from model_runners import TransformerXLModelEvaluator
 from commons.layers import AdaptiveInputSoftmax
 from commons.layers import EmbeddingLayer
+from commons.dataset import parse_fn_sequence_pair
 from commons import tokenization
 
 
@@ -27,7 +29,7 @@ flags.DEFINE_integer(
     'm_seq_len', 224, 'Memory sequence length.')
 flags.DEFINE_list(
     'cutoffs', [20000, 40000, 200000], 'Boundaries of the token IDs in the '
-        'vocabulary used to split tokens in to head and multiple tails.')
+        'vocabulary used to split tokens into head and multiple tails.')
 flags.DEFINE_bool(
     'adaptive_embedding', True, 'Whether to use adaptive token embedding and '
         'softmax for large vocabulary.')
@@ -42,16 +44,7 @@ flags.DEFINE_integer(
     'filter_size', 2048, 'The depth of the intermediate dense layer of the'
         'feed-forward sublayer.')
 
-
 FLAGS = flags.FLAGS
-
-def parse_fn(serialized_example):
-   parse_dict = {'inputs': tf.io.VarLenFeature(tf.int64),
-                 'labels': tf.io.VarLenFeature(tf.int64)}
-   parsed = tf.io.parse_single_example(serialized_example, parse_dict)
-   inputs = tf.sparse.to_dense(parsed['inputs'])
-   labels = tf.sparse.to_dense(parsed['labels'])
-   return inputs, labels
 
 
 def main(_):
@@ -92,6 +85,9 @@ def main(_):
                              num_heads,
                              filter_size)
 
+  parse_fn = functools.partial(parse_fn_sequence_pair, 
+                               keys=('inputs', 'labels'), 
+                               dtype='int32')
   dataset = tf.data.TFRecordDataset(filename + '.tfrecord')
   dataset = dataset.map(parse_fn).batch(batch_size)
 

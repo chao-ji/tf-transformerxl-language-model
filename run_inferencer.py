@@ -1,74 +1,122 @@
-"""Defines TransformerXL model in tf.keras.API."""
-import tensorflow as tf
-import numpy as np
+"""Pipeline for making inference on what comes next given a promted piece of 
+text, using a trained TransformerXL model.
+"""
+import json
 
-import utils
+import tensorflow as tf
+from absl import app
+from absl import flags
 
 from model import TransformerXLModel
-#from model import AdaptiveSoftmaxV2
-#from model import AdaptiveSoftmaxV1
 from model_runners import TransformerXLModelInferencer
+from commons.layers import AdaptiveInputSoftmax
+from commons.layers import EmbeddingLayer
+from commons import tokenization
 
-if __name__ == '__main__':
-  stack_size = 9#6
-  num_heads = 8
-  hidden_size = 512
-  filter_size = 2048
-  training = False
-  vocab_size = 267735
-  m_seq_len = 224 * 4#4096
-  q_seq_len = 224#4096
-  cutoffs = [20000, 40000, 200000]
 
-  np.random.seed(0)
+flags.DEFINE_string(
+    'prompt_filename', None, 'Name of the text file containing the prompt from '
+        'which new text will be generated.')
+flags.DEFINE_string(
+    'filename', None, 'Prefix to the name of the files containing the '
+        'configuration file (.json) of the training corpus.')
+flags.DEFINE_string(
+    'vocab_path', None, 'Path to the vocabulary file.')
+flags.DEFINE_string(
+    'model_dir', None, 'Path to the directory that checkpoint files will be '
+        'restored from.')
 
-  model = TransformerXLModel(vocab_size, cutoffs + [vocab_size], stack_size, hidden_size, num_heads, filter_size, 0.1)
+flags.DEFINE_enum(
+    'decoding_method', 'beam_search', ['topk', 'nucleus', 'beam_search'], 
+        'Decoding method.')
+flags.DEFINE_integer(
+    'm_seq_len', 224, 'Memory sequence length.')
+flags.DEFINE_list(
+    'cutoffs', [20000, 40000, 200000], 'Boundaries of the token IDs in the '
+        'vocabulary used to split tokens into head and multiple tails.')
+flags.DEFINE_bool(
+    'adaptive_embedding', True, 'Whether to use adaptive token embedding and '
+        'softmax for large vocabulary.')
+
+flags.DEFINE_integer(
+    'stack_size', 9, 'Num of layers in the decoder stack.')
+flags.DEFINE_integer(
+    'hidden_size', 512, 'The dimensionality of the embedding vector.')
+flags.DEFINE_integer(
+    'num_heads', 8, 'Num of attention heads.')
+flags.DEFINE_integer(
+    'filter_size', 2048, 'The depth of the intermediate dense layer of the'
+        'feed-forward sublayer.')
+
+FLAGS = flags.FLAGS
+
+
+def main(_):
+  prompt_filename = FLAGS.prompt_filename
+  filename = FLAGS.filename
+  vocab_path = FLAGS.vocab_path
+  model_dir = FLAGS.model_dir
+
+  decoding_method = FLAGS.decoding_method
+  m_seq_len = FLAGS.m_seq_len
+  cutoffs = FLAGS.cutoffs
+  adaptive_embedding = FLAGS.adaptive_embedding
+
+  stack_size = FLAGS.stack_size
+  hidden_size = FLAGS.hidden_size
+  num_heads = FLAGS.num_heads
+  filter_size = FLAGS.filter_size
+
+  with tf.io.gfile.GFile(filename + '.json') as f:
+    dataset_config = json.load(f)
+
+  subword = dataset_config['subword']
+
+  if subword:
+    tokenizer = tokenization.restore_subtokenizer_from_vocab_files(vocab_path)
+  else:
+    tokenizer = tokenization.restore_tokenizer_from_vocab_files(vocab_path)
+  vocab_size = tokenizer.vocab_size
+  cutoffs = list(map(int, cutoffs)) + [vocab_size]
+
+  if adaptive_embedding:
+    embedding_layer = AdaptiveInputSoftmax(hidden_size, cutoffs)
+  else:
+    embedding_layer = EmbeddingLayer(vocab_size, hidden_size)
+
+  model = TransformerXLModel(embedding_layer, 
+                             stack_size, 
+                             hidden_size, 
+                             num_heads, 
+                             filter_size)
 
   ckpt = tf.train.Checkpoint(model=model)
-  latest_ckpt = tf.train.latest_checkpoint('.')
+  latest_ckpt = tf.train.latest_checkpoint(model_dir)
+  if latest_ckpt is None:
+    raise ValueError('No checkpoint is found in %s' % model_dir)
+  print('Loaded latest checkpoint', latest_ckpt)
   ckpt.restore(latest_ckpt).expect_partial()
-  print('\n\n\n\n', latest_ckpt)
 
+  inferencer = TransformerXLModelInferencer(model, 
+                                            m_seq_len, 
+                                            1, 
+                                            vocab_size, 
+                                            adaptive_embedding, 
+                                            decoding_method)
 
+  with open(prompt_filename) as f:
+    prompt = f.read()
 
-  primer = ''
-  fn = '/home/chaoji/Desktop/transformer-xl/tf/data/wikitext-103/test.txt'
+  prompt_token_ids = tokenizer.encode(prompt, add_eos=False)
+  token_id_list = inferencer.infer(tf.constant([prompt_token_ids]))
+  text = tokenizer.decode(token_id_list) 
+  print('\nPrompted Sequence:\n')
+  print(prompt, '\n\n')
+  print('Predicted sequence:\n')
+  print(text)
 
-  with open(fn) as f:
-    for l in f:
-      primer += l[:-1]
-      if len(primer.split()) >= 128 * 60:
-        break
-
- 
-  rev_vocab = {'<eos>': 0}
-  vocab = ['<eos>']
-  with open('vocab') as f:
-    for i, line in enumerate(f):
-      vocab.append(line.strip())
-      rev_vocab[line.strip()] = i + 1 
-  
-
-  def encode(text, rev_vocab):
-    return [rev_vocab[s] for s in text]
-
-  def decode(id_list, vocab):
-    return ' '.join([vocab[id_] for id_ in id_list])
-
-  primer = primer.split()
-  text = encode(primer, rev_vocab)
-
-  primer_token_ids = tf.constant([text[:m_seq_len + 1]])
-
-   
-  inferencer = TransformerXLModelInferencer(model, m_seq_len, 1, 'nucleus')
-
-  l = inferencer.infer(primer_token_ids)
-
-  a = decode(text[:m_seq_len], vocab)
-  c = decode(text[m_seq_len:], vocab)
-  b = decode(l, vocab)
- 
-
-
- 
+if __name__ == '__main__':
+  flags.mark_flag_as_required('prompt_filename')
+  flags.mark_flag_as_required('vocab_path')
+  flags.mark_flag_as_required('model_dir')
+  app.run(main)
