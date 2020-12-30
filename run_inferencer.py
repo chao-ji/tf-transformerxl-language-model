@@ -37,6 +37,8 @@ flags.DEFINE_list(
 flags.DEFINE_bool(
     'adaptive_embedding', True, 'Whether to use adaptive token embedding and '
         'softmax for large vocabulary.')
+flags.DEFINE_integer(
+    'num_tokens', 512, 'The number of tokens to be generated.')
 
 flags.DEFINE_integer(
     'stack_size', 9, 'Num of layers in the decoder stack.')
@@ -61,6 +63,7 @@ def main(_):
   m_seq_len = FLAGS.m_seq_len
   cutoffs = FLAGS.cutoffs
   adaptive_embedding = FLAGS.adaptive_embedding
+  num_tokens = FLAGS.num_tokens
 
   stack_size = FLAGS.stack_size
   hidden_size = FLAGS.hidden_size
@@ -102,7 +105,8 @@ def main(_):
                                             1, 
                                             vocab_size, 
                                             adaptive_embedding, 
-                                            decoding_method)
+                                            decoding_method,
+                                            num_tokens=num_tokens)
 
   with open(prompt_filename) as f:
     prompt = f.read()
