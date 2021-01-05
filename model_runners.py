@@ -267,25 +267,32 @@ class TransformerXLModelInferencer(object):
           scores = self._model._embedding_layer(outputs, mode='softmax')
         else:
           scores = self._model._embedding_layer(outputs, mode='logits')
+          scores = tf.nn.softmax(scores, axis=-1)
 
         next_token_id = sampling_fn(scores.numpy()[0, 0])
         token_id_list.append(next_token_id)
         init_ids = tf.constant([[next_token_id]])
     else:
-      scoring_fn = functools.partial(
-          self._model._embedding_layer, mode='softmax')
+      if self._adaptive_embedding:
+        scoring_fn = functools.partial(
+            self._model._embedding_layer, mode='softmax')
+      else:
+        def scoring_fn(inputs):
+          logits = self._model._embedding_layer(inputs, mode='logits')
+          return tf.nn.softmax(logits, axis=-1)
+
       initial_ids = prompt_token_ids[:, -1]
 
       decoding_fn = self._model._build_decoding_fn(scoring_fn)
       decoding_cache = {'memories': memories}
       bs = beam_search.BeamSearch(decoding_fn,
-                                self._vocab_size,
-                                batch_size,
-                                self._beam_width,
-                                self._alpha,
-                                self._num_tokens,
-                                -1,
-                                logits_as_scores=False)
+                                  self._vocab_size,
+                                  batch_size,
+                                  self._beam_width,
+                                  self._alpha,
+                                  self._num_tokens,
+                                  -1,
+                                  logits_as_scores=False)
 
       outputs, _, _ = bs.search(initial_ids, decoding_cache)
       token_id_list = outputs[0, 0].numpy().tolist()
