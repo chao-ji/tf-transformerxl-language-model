@@ -1,8 +1,14 @@
 # TransformerXL for Language Modeling 
 
-TransformerXL is a recent neural network model (based on the original [Transformer model](https://arxiv.org/abs/1706.03762)) designed for language modeling -- the task to predict which word comes next given a sequence of past words. Unlike purely recurrent models (e.g. LSTM) that squash the information of all past words into a single fixed-length embedding vector, TransformerXL bases its computation of the likelihood of next word on a "memory block", a finite sequence of hidden states from previous words, each of which is in turn computed from their own memory block. Combined with the self-attention mechanism, this allows the model to draw information from a much extended range of context to generate texts that are coherent and on-topic. 
+TransformerXL is a recent neural network architecture (based on the original [Transformer model](https://arxiv.org/abs/1706.03762)) designed for language modeling -- the task to predict which word comes next given a sequence of past words. Unlike purely recurrent models (like LSTM) that squash the information of all past words into a single fixed-size embedding vector, TransformerXL bases its computation of the likelihood of all possible "next words" on a "memory block", a finite sequence of hidden states from previous words, each of which is in turn computed from their own memory blocks. Combined with the self-attention mechanism, it makes it possible to draw information from a much extended range of context to generate texts that are coherent and on-topic. 
 
-This is a tensorflow implementation of TransformerXL which allows for training & evaluating on your own datset. Plus, you can do text generation which was missing in the [offical implementation](https://github.com/kimiyoung/transformer-xl).
+This is a tensorflow implementation of TransformerXL that features
+
+* Pipelines for training, evaluation, and inference (i.e. generating text based a piece of "prompt" text).
+* Regular Embedding Layer (i.e. matrix dot product is used to convert token IDs to embedding vectors), as well as the "Adaptive Embedding Layer" (and also Adaptive Softmax Layer), which is an algorithmic technique to reducing the computational cost of neural language modeling with very large vocabulary.
+* Multiple decoding method for text generation -- Top-K, nucleus sampling, as well as Beam search.
+* Both subword and whole word tokenizer.
+
 
 ## Installation
 You can clone this repository by running
