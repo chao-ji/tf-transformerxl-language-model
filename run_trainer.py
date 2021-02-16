@@ -10,8 +10,6 @@ from absl import flags
 from model import TransformerXLModel
 from model_runners import TransformerXLModelTrainer
 from commons.utils import CosineDecayLearningRateSchedule
-from commons.layers import AdaptiveInputSoftmax
-from commons.layers import EmbeddingLayer
 from commons.dataset import parse_fn_sequence_pair
 from commons import tokenization
 
@@ -114,15 +112,13 @@ def main(_):
     tokenizer = tokenization.restore_subtokenizer_from_vocab_files(vocab_path)
   else:
     tokenizer = tokenization.restore_tokenizer_from_vocab_files(vocab_path)
+
   vocab_size = tokenizer.vocab_size
-  cutoffs = list(map(int, cutoffs)) + [vocab_size]  
+  cutoffs = list(map(int, cutoffs))
 
-  if adaptive_embedding:
-    embedding_layer = AdaptiveInputSoftmax(hidden_size, cutoffs)
-  else:
-    embedding_layer = EmbeddingLayer(vocab_size, hidden_size)
-
-  model = TransformerXLModel(embedding_layer,
+  model = TransformerXLModel(adaptive_embedding,
+                             vocab_size,
+                             cutoffs,
                              stack_size,
                              hidden_size,
                              num_heads,

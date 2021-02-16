@@ -4,6 +4,8 @@ import tensorflow as tf
 import utils
 from commons.layers import Projection
 from commons.layers import FeedForwardNetwork 
+from commons.layers import AdaptiveInputSoftmax
+from commons.layers import EmbeddingLayer
 from commons.beam_search import NEG_INF
 
 
@@ -197,7 +199,9 @@ class TransformerXLModel(tf.keras.Model):
   https://arxiv.org/abs/1706.03762
   """
   def __init__(self,
-               embedding_layer,
+               adaptive_embedding,
+               vocab_size,
+               cutoffs=None,
                stack_size=6,
                hidden_size=512,
                num_heads=8,
@@ -207,9 +211,11 @@ class TransformerXLModel(tf.keras.Model):
     """Constructor.
 
     Args:
-      embedding_layer: callable, the keras layer that converts token ids (int 
-        tensor of shape [batch_size, seq_len]) into embedding vectors (float
-        tensor of shape [batch_size, seq_len, hidden_size]).  
+      adaptive_embedding: bool scalar, whether to use adaptive token embedding
+        and softmax for large vocabulary.
+      vocab_size: int scalar, vocabulary size.
+      cutoffs: list of ints, boundaries of the token IDs in the vocabulary use
+        to split tokens in to head and multiple tails.
       stack_size: int scalar, num of layers in the decoder stack.
       hidden_size: int scalar, the hidden size of continuous representation.
       num_heads: int scalar, num of attention heads.
@@ -220,13 +226,24 @@ class TransformerXLModel(tf.keras.Model):
         query-to-reference attention matrix. 
     """
     super(TransformerXLModel, self).__init__()
-    self._embedding_layer = embedding_layer
+    self._adaptive_embedding = adaptive_embedding
+    self._vocab_size = vocab_size
+    self._cutoffs = cutoffs
     self._stack_size = stack_size
     self._hidden_size = hidden_size
     self._num_heads = num_heads
     self._filter_size = filter_size
     self._dropout_rate = dropout_rate
     self._dropout_rate_attention = dropout_rate_attention
+
+    if adaptive_embedding:
+      if cutoffs is None:
+        raise ValueError('`cutoffs` must be provided if using adaptive '
+            'embedding.')
+      cutoffs = cutoffs + [vocab_size]
+      self._embedding_layer = AdaptiveInputSoftmax(hidden_size, cutoffs)
+    else:
+      self._embedding_layer = EmbeddingLayer(vocab_size, hidden_size)
 
     self._embeddings_dropout_layer = tf.keras.layers.Dropout(dropout_rate)
     self._positional_encoding_dropout_layer = tf.keras.layers.Dropout(
