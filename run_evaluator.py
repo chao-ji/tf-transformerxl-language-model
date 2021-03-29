@@ -41,6 +41,10 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     'filter_size', 2048, 'The depth of the intermediate dense layer of the'
         'feed-forward sublayer.')
+flags.DEFINE_bool(
+    'untie_biases', True, 'Whether to force all layers use the same content '
+        'bias and position bias (False), or create the biases for each layer'
+        ' (True).')
 
 FLAGS = flags.FLAGS
 
@@ -58,6 +62,7 @@ def main(_):
   hidden_size = FLAGS.hidden_size
   num_heads = FLAGS.num_heads
   filter_size = FLAGS.filter_size
+  untie_biases = FLAGS.untie_biases
 
   with tf.io.gfile.GFile(filename + '.json') as f:
     dataset_config = json.load(f)
@@ -79,7 +84,8 @@ def main(_):
                              stack_size,
                              hidden_size,
                              num_heads,
-                             filter_size)
+                             filter_size,
+                             untie_biases=untie_biases)
 
   parse_fn = functools.partial(parse_fn_sequence_pair, 
                                keys=('inputs', 'labels'), 
