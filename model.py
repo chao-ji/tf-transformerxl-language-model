@@ -9,7 +9,7 @@ from commons.layers import EmbeddingLayer
 from commons.beam_search import NEG_INF
 
 
-class AttentionWithSharedBias(tf.keras.layers.Layer):
+class Attention(tf.keras.layers.Layer):
   """Multi-headed attention layer used in TransformerXL model. The content and
   position bias will be provided from outide.
   """
@@ -22,7 +22,7 @@ class AttentionWithSharedBias(tf.keras.layers.Layer):
       dropout_rate_attention: float scalar, dropout rate applied on the 
         query-to-reference attention matrix. 
     """
-    super(AttentionWithSharedBias, self).__init__()
+    super(Attention, self).__init__()
     self._hidden_size = hidden_size
     self._num_heads = num_heads
     self._dropout_rate_attention = dropout_rate_attention
@@ -47,8 +47,8 @@ class AttentionWithSharedBias(tf.keras.layers.Layer):
            token_mask, 
            memory_seqs, 
            training,
-           content_bias=None,
-           position_bias=None):
+           content_bias,
+           position_bias):
     """Computes new representation of query sequences.
 
     Args:
@@ -72,10 +72,6 @@ class AttentionWithSharedBias(tf.keras.layers.Layer):
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
         new representation of `query_seqs`. 
     """
-    if content_bias is None and position_bias is None:
-      # [num_heads, size_per_head]
-      content_bias, position_bias = self.weights[:2]
-
     # [batch_size, q_seq_len + m_seq_len, hidden_size]
     reference_seqs = tf.concat([memory_seqs, query_seqs], axis=1)
 
@@ -115,30 +111,6 @@ class AttentionWithSharedBias(tf.keras.layers.Layer):
     return outputs 
 
 
-class Attention(AttentionWithSharedBias):
-  """Multi-headed attention layer used in TransformerXL model. Has its own
-  content and position bias.
-  """
-  def build(self, inputs_shape):
-    """Creates weights of this layer.
-
-    Args:
-      inputs_shape: tuple of ints or 1-D int tensor, the last element
-        corresponds to the depth.
-    """
-    self.add_weight(name='content_bias',
-                    shape=[self._num_heads, self._size_per_head],
-                    initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
-                    dtype='float32',
-                    trainable=True)
-    self.add_weight(name='position_bias',
-                    shape=[self._num_heads, self._size_per_head],
-                    initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
-                    dtype='float32',
-                    trainable=True)
-    super(Attention, self).build(inputs_shape)
-
-
 class DecoderLayer(tf.keras.layers.Layer):
   """The building block that makes the decoder stack of layers, consisting of a 
   self-attention sublayer and a feed-forward sublayer.
@@ -148,8 +120,7 @@ class DecoderLayer(tf.keras.layers.Layer):
                num_heads, 
                filter_size, 
                dropout_rate, 
-               dropout_rate_attention,
-               reuse_biases=False):
+               dropout_rate_attention):
     """Constructor.
 
     Args:
@@ -160,8 +131,6 @@ class DecoderLayer(tf.keras.layers.Layer):
       dropout_rate: float scalar, dropout rate for the Dropout layers.   
       dropout_rate_attention: float scalar, dropout rate applied on the 
         query-to-reference attention matrix. 
-      reuse_biases: (Optional) bool scalar, whether to reuse biases from outside
-        or create its own biases. Defaults to False.
     """
     super(DecoderLayer, self).__init__()
     self._hidden_size = hidden_size
@@ -169,11 +138,8 @@ class DecoderLayer(tf.keras.layers.Layer):
     self._filter_size = filter_size
     self._dropout_rate = dropout_rate
     self._dropout_rate_attention = dropout_rate_attention
-    self._reuse_biases = reuse_biases
 
-    AttentionLayer = AttentionWithSharedBias if reuse_biases else Attention
-
-    self._mha = AttentionLayer(
+    self._mha = Attention(
         hidden_size, num_heads, dropout_rate_attention)
     self._layernorm_mha = tf.keras.layers.LayerNormalization(epsilon=1e-12)
     self._dropout_mha = tf.keras.layers.Dropout(dropout_rate)
@@ -188,8 +154,8 @@ class DecoderLayer(tf.keras.layers.Layer):
            look_ahead_mask,
            memories,
            training,
-           content_bias=None,
-           position_bias=None):
+           content_bias,
+           position_bias):
     """Computes the output of the decoder layer.
 
     Args:
@@ -229,7 +195,7 @@ class DecoderLayer(tf.keras.layers.Layer):
     return outputs
 
 
-class TransformerXLModel(tf.keras.Model):
+class TransformerXLModel(tf.keras.layers.Layer):
   """TransformerXL neural architecture for language modeling as described in 
   https://arxiv.org/abs/1706.03762
   """
@@ -243,7 +209,7 @@ class TransformerXLModel(tf.keras.Model):
                filter_size=2048,
                dropout_rate=0.1,
                dropout_rate_attention=0.0,
-               untie_biases=True):
+               tie_biases=False):
     """Constructor.
 
     Args:
@@ -260,9 +226,9 @@ class TransformerXLModel(tf.keras.Model):
       dropout_rate: float scalar, dropout rate for the Dropout layers.   
       dropout_rate_attention: float scalar, dropout rate applied on the 
         query-to-reference attention matrix. 
-      untie_biases: bool scalar, whether to force all layers use the same
-        content bias and position bias (False), or create the biases for each
-        layer (True).
+      tie_biases: bool scalar, whether to force all layers use the same
+        content bias and position bias (True), or create the biases for each
+        layer (False).
     """
     super(TransformerXLModel, self).__init__()
     self._adaptive_embedding = adaptive_embedding
@@ -274,7 +240,7 @@ class TransformerXLModel(tf.keras.Model):
     self._filter_size = filter_size
     self._dropout_rate = dropout_rate
     self._dropout_rate_attention = dropout_rate_attention
-    self._untie_biases = untie_biases
+    self._tie_biases = tie_biases
 
     if adaptive_embedding:
       if cutoffs is None:
@@ -291,18 +257,32 @@ class TransformerXLModel(tf.keras.Model):
     self._dropout_layer = tf.keras.layers.Dropout(dropout_rate)
     self._stack = []
     for i in range(self._stack_size):
-      if self._untie_biases:
-        reuse_biases = False
-      else:
-        reuse_biases = i != 0
       self._stack.append(DecoderLayer(hidden_size,
                                       num_heads,
                                       filter_size,
                                       dropout_rate,
-                                      dropout_rate_attention,
-                                      reuse_biases=reuse_biases))
+                                      dropout_rate_attention))
 
-  def call(self, inputs, memories, training=True):
+  def build(self, inputs_shape):
+    size_per_head = self._hidden_size // self._num_heads
+    if self._tie_biases:
+      bias_shape = [self._num_heads, size_per_head]
+    else:
+      bias_shape = [self._stack_size, self._num_heads, size_per_head]
+
+    self.add_weight(name='content_bias',
+                    shape=bias_shape,
+                    initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
+                    dtype='float32',
+                    trainable=True)
+    self.add_weight(name='position_bias',
+                    shape=bias_shape,
+                    initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
+                    dtype='float32',
+                    trainable=True)
+    super(TransformerXLModel, self).build(inputs_shape)
+
+  def call(self, inputs, memories, training=False):
     """Takes as input the token ids of a batch of sequence segments as well
     as the embeddings of tokens from the previous sequence segment, and 
     computes the embedding vectors of the immediate "next" tokens of each token
@@ -404,12 +384,12 @@ class TransformerXLModel(tf.keras.Model):
 
     for i in range(self._stack_size):
       new_memories.append(utils.cache_memory(memories[:, i], embeddings))
-      if self._untie_biases:
-        content_bias, position_bias = None, None
-      elif i == 0:
-        content_bias, position_bias = None, None
+
+      if self._tie_biases:
+        content_bias, position_bias = self.weights[:2]
       else:
-        content_bias, position_bias = self._stack[0]._mha.weights[:2]
+        content_bias, position_bias = self.weights[0][i], self.weights[1][i]
+
       embeddings = self._stack[i](embeddings, 
                                   positional_encoding, 
                                   attention_mask, 
