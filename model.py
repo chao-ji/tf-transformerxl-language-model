@@ -30,11 +30,11 @@ class Attention(tf.keras.layers.Layer):
 
     self._dense_layer_query = Projection(
         num_heads, self._size_per_head, mode='split')
-    self._dense_layer_key = Projection(
+    self._dense_layer_key_content = Projection(
         num_heads, self._size_per_head, mode='split')
     self._dense_layer_value = Projection(
         num_heads, self._size_per_head, mode='split')
-    self._dense_layer_r = Projection(
+    self._dense_layer_key_position = Projection(
         num_heads, self._size_per_head, mode='split')
     self._dense_layer_output = Projection(
         num_heads, self._size_per_head, mode='merge')
@@ -63,10 +63,10 @@ class Attention(tf.keras.layers.Layer):
       memory_seqs: float tensor of shape [batch_size, m_seq_len, hidden_size],
         memory sequences from the previous segment.  
       training: bool scalar, True if in training mode. 
-      content_bias: (Optional) float tensor of shape [num_heads, size_per_head],
-        bias to be added to the query sequences.
-      position_bias: (Optional) float tensor of shape [num_heads, size_per_head]
-        , bias to be added to the query sequences.
+      content_bias: float tensor of shape [num_heads, size_per_head], bias to be
+        added to the query sequences.
+      position_bias: float tensor of shape [num_heads, size_per_head], bias to
+        be added to the query sequences.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
@@ -79,21 +79,22 @@ class Attention(tf.keras.layers.Layer):
     query = self._dense_layer_query(query_seqs)
 
     # [batch_size, q_seq_len + m_seq_len, num_heads, size_per_head]
-    key = self._dense_layer_key(reference_seqs)
+    key_content = self._dense_layer_key_content(reference_seqs)
+
+    # [q_seq_len + m_seq_len, num_heads, size_per_head]
+    key_position = self._dense_layer_key_position(
+        positional_encoding[tf.newaxis])[0]
 
     # [batch_size, q_seq_len + m_seq_len, num_heads, size_per_head] 
     value = self._dense_layer_value(reference_seqs)
 
-    # [1, q_seq_len + m_seq_len, hidden_size]
-    positional_encoding = positional_encoding[tf.newaxis] 
-
     # [batch_size, num_heads, q_seq_len, q_seq_len + m_seq_len]
     content = tf.einsum('NQHS,NRHS->NHQR', 
                         query + content_bias, 
-                        key)
+                        key_content)
     positions = tf.einsum('NQHS,RHS->NHQR', 
                           query + position_bias, 
-                          self._dense_layer_r(positional_encoding)[0])
+                          key_position)
     positions = utils.rel_shift(positions)
 
     # [batch_size, num_heads, q_seq_len, q_seq_len + m_seq_len]
@@ -170,10 +171,9 @@ class DecoderLayer(tf.keras.layers.Layer):
       memories: float tensor of shape [batch_size, m_seq_len, hidden_size],
         memory sequences from the previous segment.
       training: bool scalar, True if in training mode.
-      content_bias: (Optional) float tensor of shape [num_heads, size_per_head],
-        bias to be added to the query sequences.
-      position_bias: (Optional) float tensor of shape [num_heads, size_per_head]
-        , bias to be added to the query sequences.
+      content_bias: float tensor of shape [num_heads, size_per_head], bias to 
+        be added to the query sequences.
+      position_bias: float tensor of shape [num_heads, size_per_head], bias to            be added to the query sequences.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the

@@ -47,9 +47,9 @@ flags.DEFINE_float(
     'dropout_rate_attention', 0.0, 'Dropout rate applied on the ' 
         'query-to-reference attention matrix.')
 flags.DEFINE_bool(
-    'untie_biases', True, 'Whether to force all layers use the same content '
-        'bias and position bias (False), or create the biases for each layer'
-        ' (True).')
+    'tie_biases', False, 'Whether to force all layers use the same content '
+        'bias and position bias (True), or create the biases for each layer'
+        ' (False).')
 
 flags.DEFINE_float(
     'learning_rate', 2.5e-4, 'Base learning rate.')
@@ -92,7 +92,7 @@ def main(_):
   filter_size = FLAGS.filter_size
   dropout_rate = FLAGS.dropout_rate
   dropout_rate_attention = FLAGS.dropout_rate_attention
-  untie_biases = FLAGS.untie_biases
+  tie_biases = FLAGS.tie_biases
 
   learning_rate = FLAGS.learning_rate
   learning_rate_warmup_steps = FLAGS.learning_rate_warmup_steps
@@ -130,7 +130,7 @@ def main(_):
                              filter_size,
                              dropout_rate=dropout_rate,
                              dropout_rate_attention=dropout_rate_attention,
-                             untie_biases=untie_biases)
+                             tie_biases=tie_biases)
 
   # training datset
   parse_fn = functools.partial(parse_fn_sequence_pair, 
