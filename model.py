@@ -173,7 +173,8 @@ class DecoderLayer(tf.keras.layers.Layer):
       training: bool scalar, True if in training mode.
       content_bias: float tensor of shape [num_heads, size_per_head], bias to 
         be added to the query sequences.
-      position_bias: float tensor of shape [num_heads, size_per_head], bias to            be added to the query sequences.
+      position_bias: float tensor of shape [num_heads, size_per_head], bias to
+        be added to the query sequences.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
