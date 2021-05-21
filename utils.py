@@ -59,22 +59,17 @@ def get_look_ahead_mask(q_seq_len, m_seq_len):
 
 
 def rel_shift(inputs):
-  """Shift the input tensor.
+  """Shift the matrix in the input tensor, so that the query position matches 
+  correctly with the key position for computing attention scores.
 
   Given input tensor `x` of shape [batch_size, num_heads, q_seq_len, r_seq_len],
-  each slice `x[i, j]` is a matrix of shape [q_seq_len, r_seq_len], e.g.
+  each slice `x[i, j]` is a matrix of shape [q_seq_len, r_seq_len] (Note that 
+  generally `r_seq_len` >= `q_seq_len`
 
-  0,  1,  2
-  3,  4,  5
-  6,  7,  8
-  9, 10, 11
+  the matrix `x[i, j]` in the output will be a left-shifted version of the input
+  , where the 0th, 1st, ..., and `q_seq_len - 1`-th row will be left-shifted by 
+  `q_seq_len - 1`, `q_seq_len - 2`, ..., and 0 positions.
 
-  the shifted version of `x[i, j]` is 
-
-  0,  3,  4
-  5,  0,  6
-  7,  8,  0
-  9, 10, 11
 
   Args:
     inputs: float tensor of shape [batch_size, num_heads, q_seq_len, r_seq_len],

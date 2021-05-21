@@ -11,7 +11,7 @@ from commons.beam_search import NEG_INF
 
 class Attention(tf.keras.layers.Layer):
   """Multi-headed attention layer used in TransformerXL model. The content and
-  position bias will be provided from outide.
+  position bias will be provided by the caller.
   """
   def __init__(self, hidden_size, num_heads, dropout_rate_attention):
     """Constructor.
@@ -41,32 +41,32 @@ class Attention(tf.keras.layers.Layer):
     self._attention_dropout_layer = tf.keras.layers.Dropout(
         dropout_rate_attention)
 
-  def call(self, 
-           query_seqs, 
-           positional_encoding, 
-           token_mask, 
-           memory_seqs, 
-           training,
+  def call(self,
+           query_seqs,
+           memory_seqs,
+           positional_encoding,
+           token_mask,
            content_bias,
-           position_bias):
+           position_bias,
+           training=False):
     """Computes new representation of query sequences.
 
     Args:
       query_seqs: float tensor of shape [batch_size, q_seq_len, hidden_size],
         query_sequences.
+      memory_seqs: float tensor of shape [batch_size, m_seq_len, hidden_size],
+        memory sequences from the previous segment.
       positional_encoding: float tensor of shape [q_seq_len + m_seq_len, 
         hidden_size], the tensor that encodes positional information of 
         `query_seqs` and `memory_seqs` concatenated along the time step axis.
       token_mask: float tensor of shape [1, 1, q_seq_len, q_seq_len + m_seq_len]
         , populated with either 0 (for tokens to keep) or 1 (for tokens to be 
         masked).
-      memory_seqs: float tensor of shape [batch_size, m_seq_len, hidden_size],
-        memory sequences from the previous segment.  
-      training: bool scalar, True if in training mode. 
       content_bias: float tensor of shape [num_heads, size_per_head], bias to be
         added to the query sequences.
       position_bias: float tensor of shape [num_heads, size_per_head], bias to
         be added to the query sequences.
+      training: bool scalar, True if in training mode.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
@@ -116,11 +116,11 @@ class DecoderLayer(tf.keras.layers.Layer):
   """The building block that makes the decoder stack of layers, consisting of a 
   self-attention sublayer and a feed-forward sublayer.
   """
-  def __init__(self, 
-               hidden_size, 
-               num_heads, 
-               filter_size, 
-               dropout_rate, 
+  def __init__(self,
+               hidden_size,
+               num_heads,
+               filter_size,
+               dropout_rate,
                dropout_rate_attention):
     """Constructor.
 
@@ -129,9 +129,9 @@ class DecoderLayer(tf.keras.layers.Layer):
       num_heads: int scalar, num of attention heads.
       filter_size: int scalar, the depth of the intermediate dense layer of the
         feed-forward sublayer.
-      dropout_rate: float scalar, dropout rate for the Dropout layers.   
-      dropout_rate_attention: float scalar, dropout rate applied on the 
-        query-to-reference attention matrix. 
+      dropout_rate: float scalar, dropout rate for the Dropout layers.
+      dropout_rate_attention: float scalar, dropout rate applied on the
+        query-to-reference attention matrix.
     """
     super(DecoderLayer, self).__init__()
     self._hidden_size = hidden_size
@@ -151,42 +151,42 @@ class DecoderLayer(tf.keras.layers.Layer):
 
   def call(self,
            inputs,
+           memories,
            positional_encoding,
            look_ahead_mask,
-           memories,
-           training,
            content_bias,
-           position_bias):
+           position_bias,
+           training=False):
     """Computes the output of the decoder layer.
 
     Args:
       inputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the 
         input sequences whose "next-token" sequences we need to predict.
+      memories: float tensor of shape [batch_size, m_seq_len, hidden_size],
+        memory sequences from the previous segment.
       positional_encoding: float tensor of shape [q_seq_len + m_seq_len, 
         hidden_size], the tensor that encodes positional information of 
         `query_seqs` and `memory_seqs` concatenated along the time step axis.
       look_ahead_mask: float tensor of shape [1, 1, q_seq_len, q_seq_len + 
         m_seq_len], populated with either 0 (for tokens to keep) or 1 (for 
         tokens to be masked).
-      memories: float tensor of shape [batch_size, m_seq_len, hidden_size],
-        memory sequences from the previous segment.
-      training: bool scalar, True if in training mode.
       content_bias: float tensor of shape [num_heads, size_per_head], bias to 
         be added to the query sequences.
       position_bias: float tensor of shape [num_heads, size_per_head], bias to
         be added to the query sequences.
+      training: bool scalar, True if in training mode.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
         new representation of `inputs`.
     """
     outputs = self._mha(inputs,
+                        memories,
                         positional_encoding,
                         look_ahead_mask,
-                        memories,
-                        training,
-                        content_bias=content_bias,
-                        position_bias=position_bias)
+                        content_bias,
+                        position_bias,
+                        training)
     outputs = self._dropout_mha(outputs, training=training)
     ffn_inputs = self._layernorm_mha(outputs + inputs)
 
@@ -295,7 +295,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
       memories: float tensor of shape [batch_size, stach_size, m_seq_len, 
         hidden_size], embeddings of the tokens from the previous sequence 
         segment for each layer of the decoder stack.
-      training: bool scalar, True if in training mode. 
+      training: bool scalar, True if in training mode.
 
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
@@ -355,7 +355,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
       memories: float tensor of shape [batch_size, stack_size, m_seq_len, 
         hidden_size], embeddings of the tokens from the previous sequence 
         segment for each layer of the decoder stack.
-      training: bool scalar, True if in training mode. 
+      training: bool scalar, True if in training mode.
 
     Returns:
       embeddings: float tensor of shape [batch_size, q_seq_len, hidden_size],
@@ -392,11 +392,11 @@ class TransformerXLModel(tf.keras.layers.Layer):
         content_bias, position_bias = self.weights[0][i], self.weights[1][i]
 
       embeddings = self._stack[i](embeddings, 
+                                  memories[:, i],
                                   positional_encoding, 
                                   attention_mask, 
-                                  memories[:, i], 
-                                  training=training,
-                                  content_bias=content_bias,
-                                  position_bias=position_bias)
+                                  content_bias,
+                                  position_bias,
+                                  training=training)
     new_memories = tf.stack(new_memories, axis=1)
     return embeddings, new_memories
