@@ -376,7 +376,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
 
     # [q_seq_len + m_seq_len, hidden_size] 
     positional_encoding = utils.get_positional_encoding(
-          m_seq_len + q_seq_len, self._hidden_size)
+          m_seq_len + q_seq_len, self._hidden_size, reverse=True)
     
     embeddings = self._embeddings_dropout_layer(
         embeddings, training=training)

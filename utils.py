@@ -2,24 +2,27 @@
 import tensorflow as tf
 
 
-def get_positional_encoding(seq_len, hidden_size):
-  """Creates a tensor that encodes (relative) positional information.
+def get_positional_encoding(seq_len, hidden_size, reverse=False):
+  """Creates a tensor that encodes positional information.
 
   Args:
     seq_len: int scalar tensor, sequence length.
     hidden_size: int scalar, the hidden size of continuous representation.
+    reverse: bool, whether to reverse the sequence. Defaults to False.
 
   Returns:
     positional_encoding: float tensor of shape [seq_len, hidden_size], the 
-      tensor that encodes relative positional information.
+      tensor that encodes positional information.
   """
-  distances = tf.range(seq_len - 1, -1, -1.0)
+  distances = tf.cast(tf.range(seq_len), 'float32')
+  if reverse:
+    distances = distances[::-1]
+  hidden_size //= 2
   inverse_frequencies = 1 / (
-      10000 ** (tf.range(0, hidden_size, 2.0) / hidden_size))
+      10000 ** (tf.cast(tf.range(hidden_size), 'float32') / (hidden_size - 1)))
   positional_encoding = tf.einsum('i,j->ij', distances, inverse_frequencies)
   positional_encoding = tf.concat([tf.sin(positional_encoding),
-                                    tf.cos(positional_encoding)], axis=1)
-  #positional_encoding = positional_encoding[tf.newaxis, :, :]
+                                   tf.cos(positional_encoding)], axis=1)
   return positional_encoding
 
 
