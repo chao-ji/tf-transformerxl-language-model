@@ -267,7 +267,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
         segment.
     """
     m_seq_len = tf.shape(memories)[2]
-    batch_size, q_seq_len = tf.shape(inputs)
+    batch_size, q_seq_len = tf.unstack(tf.shape(inputs), axis=0)
     new_memories = []
 
     # [batch_size, q_seq_len, hidden_size]
