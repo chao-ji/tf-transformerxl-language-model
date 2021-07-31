@@ -2,27 +2,28 @@
 import tensorflow as tf
 
 
-def get_positional_encoding(seq_len, hidden_size, reverse=False):
+def get_positional_encoding(batch_size, seq_len, hidden_size, reverse=False):
   """Creates a tensor that encodes positional information.
 
   Args:
+    batch_size: int scalar tensor, batch size. 
     seq_len: int scalar tensor, sequence length.
     hidden_size: int scalar, the hidden size of continuous representation.
     reverse: bool, whether to reverse the sequence. Defaults to False.
 
   Returns:
-    positional_encoding: float tensor of shape [seq_len, hidden_size], the 
+    positional_encoding: float tensor of shape [batch_size, seq_len, hidden_size], the 
       tensor that encodes positional information.
   """
   distances = tf.cast(tf.range(seq_len), 'float32')
   if reverse:
     distances = distances[::-1]
-  hidden_size //= 2
-  inverse_frequencies = 1 / (
-      10000 ** (tf.cast(tf.range(hidden_size), 'float32') / (hidden_size - 1)))
+  inverse_frequencies = 1 / (10000 ** (tf.range(0, hidden_size, 2.0) /
+      hidden_size))
   positional_encoding = tf.einsum('i,j->ij', distances, inverse_frequencies)
   positional_encoding = tf.concat([tf.sin(positional_encoding),
                                    tf.cos(positional_encoding)], axis=1)
+  positional_encoding = tf.tile(positional_encoding[tf.newaxis], [batch_size, 1, 1])
   return positional_encoding
 
 
@@ -90,14 +91,14 @@ def rel_shift(inputs):
   return outputs
 
    
-def cache_memory(memory, embeddings, m_seq_len=None):
+def cache_memory(memory, inputs, m_seq_len=None):
   """Cache the memory for the next segment.
 
   Args:
     memory: float tensor of shape [batch_size, m_seq_len, hidden_size], memory
       for the current segment.
-    embeddings: float tensor of shape [batch_size, q_seq_len, hidden_size], 
-      embedding vectors for the input tokens.
+    inputs: float tensor of shape [batch_size, q_seq_len, hidden_size], 
+      input sequences.
     m_seq_len: int scalar, num of time steps to be cached.
 
   Returns:
@@ -105,7 +106,7 @@ def cache_memory(memory, embeddings, m_seq_len=None):
       for the next segment.
   """
   if m_seq_len is None:
-    m_seq_len = tf.shape(memory)[1] #.shape[1]
+    m_seq_len = tf.shape(memory)[1]
   new_memory = tf.stop_gradient(
-      tf.concat([memory, embeddings], axis=1)[:, -m_seq_len:])
+      tf.concat([memory, inputs], axis=1)[:, -m_seq_len:])
   return new_memory
