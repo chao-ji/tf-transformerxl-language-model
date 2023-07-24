@@ -103,7 +103,6 @@ def main(_):
   evaluator = TransformerXLModelEvaluator(model, 
                                           m_seq_len, 
                                           batch_size, 
-                                          vocab_size, 
                                           adaptive_embedding)
   print('Evaluating file %s...' % (filename + '.tfrecord'))
   perplexity = evaluator.evaluate(dataset)

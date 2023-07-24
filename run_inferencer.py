@@ -51,6 +51,10 @@ flags.DEFINE_bool(
     'tie_biases', True, 'Whether to force all layers use the same content '
         'bias and position bias (True), or create the biases for each layer'
         ' (False).')
+flags.DEFINE_bool(
+    'batch_memory_processing', False, 'whether to compute the sequence '
+        'embeddings in the memory segment batchwise, or one at a time.')
+
 
 FLAGS = flags.FLAGS
 
@@ -105,7 +109,6 @@ def main(_):
   inferencer = TransformerXLModelInferencer(model, 
                                             m_seq_len, 
                                             1, 
-                                            vocab_size, 
                                             adaptive_embedding, 
                                             decoding_method,
                                             num_tokens=num_tokens)
@@ -115,7 +118,10 @@ def main(_):
 
   prompt_token_ids = tokenizer.encode(prompt, add_eos=False)
   token_id_list = inferencer.infer(tf.constant([prompt_token_ids]))
-  text = tokenizer.decode(token_id_list) 
+  if tokenization.EOS_ID in token_id_list:
+    index = token_id_list.index(tokenization.EOS_ID)
+    token_id_list = token_id_list[:index]
+  text =tokenizer.decode(token_id_list)
   print('\nPrompted Sequence:\n')
   print(prompt, '\n\n')
   print('Predicted sequence:\n')

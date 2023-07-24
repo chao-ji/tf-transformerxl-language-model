@@ -62,35 +62,6 @@ def get_look_ahead_mask(q_seq_len, m_seq_len):
   return look_ahead_mask
 
 
-def rel_shift(inputs):
-  """Shift the matrix in the input tensor, so that the query position matches 
-  correctly with the key position for computing attention scores.
-
-  Given input tensor `x` of shape [batch_size, num_heads, q_seq_len, r_seq_len],
-  each slice `x[i, j]` is a matrix of shape [q_seq_len, r_seq_len] (Note that 
-  generally `r_seq_len` >= `q_seq_len`
-
-  the matrix `x[i, j]` in the output will be a left-shifted version of the input
-  , where the 0th, 1st, ..., and `q_seq_len - 1`-th row will be left-shifted by 
-  `q_seq_len - 1`, `q_seq_len - 2`, ..., and 0 positions.
-
-
-  Args:
-    inputs: float tensor of shape [batch_size, num_heads, q_seq_len, r_seq_len],
-      the input tensor.
-
-  Returns:
-    outputs: float tensor of shape [batch_size, num_heads, q_seq_len, r_seq_len]
-      , the shifted tensor.
-  """
-  shape = tf.shape(inputs)
-  padded = tf.pad(inputs, [[0, 0], [0, 0], [0, 0], [1, 0]])
-  reshaped = tf.reshape(padded, [shape[0], shape[1], shape[3] + 1, shape[2]])
-  sliced = reshaped[:, :, 1:]
-  outputs = tf.reshape(sliced, shape)
-  return outputs
-
-   
 def cache_memory(memory, inputs, m_seq_len=None):
   """Cache the memory for the next segment.
 
@@ -102,8 +73,8 @@ def cache_memory(memory, inputs, m_seq_len=None):
     m_seq_len: int scalar, num of time steps to be cached.
 
   Returns:
-    new_memory: float tensor of shape [batch_size, m_seq_len], memory cached
-      for the next segment.
+    new_memory: float tensor of shape [batch_size, m_seq_len, hidden_size],
+      memory cached for the next segment.
   """
   if m_seq_len is None:
     m_seq_len = tf.shape(memory)[1]

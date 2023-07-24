@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 from commons import beam_search
 from commons import utils
+from commons.tokenization import EOS_ID
 
 
 class TransformerXLModelTrainer(object):
@@ -16,7 +17,6 @@ class TransformerXLModelTrainer(object):
                model, 
                m_seq_len,
                batch_size, 
-               vocab_size, 
                adaptive_embedding):
     """Constructor.
 
@@ -24,14 +24,12 @@ class TransformerXLModelTrainer(object):
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
       batch_size: int scalar, batch size.
-      vocab_size: int scalar, num of entries in the vocabulary.
       adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
         softmax) layer.
     """
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
-    self._vocab_size = vocab_size
     self._adaptive_embedding = adaptive_embedding
 
   def train(self,
@@ -78,7 +76,7 @@ class TransformerXLModelTrainer(object):
     @tf.function(input_signature=train_step_signature)
     def train_step(inputs, memories, labels):
       with tf.GradientTape() as tape:
-        outputs, new_memories = self._model(inputs, memories)
+        outputs, new_memories = self._model(inputs, memories, training=True)
         if self._adaptive_embedding:
           losses = self._model._embedding_layer(outputs, labels, mode='loss')
         else:
@@ -96,7 +94,7 @@ class TransformerXLModelTrainer(object):
           zip(gradients, trainable_variables))
 
       step = optimizer.iterations
-      lr = optimizer.learning_rate(step)
+      lr = optimizer.learning_rate
       return loss, new_memories, step - 1, lr
 
     summary_writer = tf.summary.create_file_writer(logdir)
@@ -138,14 +136,12 @@ class TransformerXLModelEvaluator(object):
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
       batch_size: int scalar, batch size.    
-      vocab_size: int scalar, num of entries in the vocabulary.
       adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
         softmax) layer.
     """
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
-    self._vocab_size = vocab_size
     self._adaptive_embedding = adaptive_embedding
 
   def evaluate(self, dataset):
@@ -195,19 +191,18 @@ class TransformerXLModelInferencer(object):
                model, 
                m_seq_len, 
                batch_size,
-               vocab_size, 
                adaptive_embedding,
                decoding_method, 
                num_tokens=512,
                beam_width=4,
-               alpha=0.6):
+               alpha=0.6,
+               batch_memory_processing=False):
     """Constructor.
 
     Args:
       model: an instance of TransformerXL model.
       m_seq_len: int scalar, length of the memory sequence.
       batch_size: int scalar, batch_size.
-      vocab_size: int scalar, num of entries in the vocabulary.
       adaptive_embedding: bool scalar, whether to use adaptive embedding (and 
         softmax) layer.
       decoding_method: string scalar, decoding method. Must be "nucleus", 'topk'
@@ -217,6 +212,8 @@ class TransformerXLModelInferencer(object):
         decoding method is not beam search.
       alpha: float scalar, defining the strength of length normalization. 
         Ignored if decoding method is not beam search.
+      batch_memory_processing: bool scalar, whether to compute the sequence
+        embeddings in the memory segment batchwise, or one at a time.
     """
     if decoding_method not in ('nucleus', 'topk', 'beam_search'):
       raise ValueError('`decoding_method` must be either nucleus, topk or '
@@ -224,12 +221,12 @@ class TransformerXLModelInferencer(object):
     self._model = model
     self._m_seq_len = m_seq_len
     self._batch_size = batch_size
-    self._vocab_size = vocab_size
     self._adaptive_embedding = adaptive_embedding
     self._decoding_method = decoding_method
     self._num_tokens = num_tokens
     self._beam_width = beam_width
     self._alpha = alpha
+    self._batch_memory_processing = batch_memory_processing
 
   def infer(self, prompt_token_ids):
     """Generate text based on the prompted text.
@@ -246,10 +243,15 @@ class TransformerXLModelInferencer(object):
     m_seq_len = self._m_seq_len
     hidden_size = self._model._hidden_size
 
-    memories = tf.zeros(
-        [batch_size, stack_size, m_seq_len, hidden_size], dtype='float32')
-    _, memories = self._model(
+    memories = tf.zeros((batch_size, stack_size, m_seq_len, hidden_size))
+
+    if self._batch_memory_processing:
+      _, memories = self._model(
         prompt_token_ids[:, :-1], memories, training=False)
+    else:
+      for pos in prompt_token_ids[0, :-1]:
+        _, memories = self._model(pos[tf.newaxis, tf.newaxis], memories,
+          training=False)
 
     if self._decoding_method != 'beam_search':
       if self._decoding_method == 'nucleus':
@@ -272,6 +274,8 @@ class TransformerXLModelInferencer(object):
         next_token_id = sampling_fn(scores.numpy()[0, 0])
         token_id_list.append(next_token_id)
         init_ids = tf.constant([[next_token_id]])
+        if next_token_id == EOS_ID:
+          break
     else:
       if self._adaptive_embedding:
         scoring_fn = functools.partial(
@@ -286,12 +290,12 @@ class TransformerXLModelInferencer(object):
       decoding_fn = self._model._build_decoding_fn(scoring_fn)
       decoding_cache = {'memories': memories}
       bs = beam_search.BeamSearch(decoding_fn,
-                                  self._vocab_size,
+                                  self._model._vocab_size,
                                   batch_size,
                                   self._beam_width,
                                   self._alpha,
                                   self._num_tokens,
-                                  -1,
+                                  EOS_ID,
                                   logits_as_scores=False)
 
       outputs, _, _ = bs.search(initial_ids, decoding_cache)

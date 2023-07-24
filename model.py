@@ -47,7 +47,7 @@ class DecoderLayer(tf.keras.layers.Layer):
 
   def call(self,
            inputs,
-           memories,
+           context,
            positional_encoding,
            look_ahead_mask,
            content_bias,
@@ -58,8 +58,8 @@ class DecoderLayer(tf.keras.layers.Layer):
     Args:
       inputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
         input sequences whose "next-token" sequences we need to predict.
-      memories: float tensor of shape [batch_size, c_seq_len, hidden_size],
-        memory sequences from the previous segment.
+      context: float tensor of shape [batch_size, c_seq_len, hidden_size],
+        context sequences that `inputs` attend to. 
       positional_encoding: float tensor of shape [c_seq_len,
         hidden_size], the tensor that encodes positional information of
         `query` and `memory_seqs` concatenated along the time step axis.
@@ -79,7 +79,7 @@ class DecoderLayer(tf.keras.layers.Layer):
 
     outputs = self._mha(inputs,
                         look_ahead_mask,
-                        memories,
+                        context,
                         positional_encoding,
                         content_bias,
                         position_bias,
@@ -188,13 +188,12 @@ class TransformerXLModel(tf.keras.layers.Layer):
   def call(self, inputs, memories, training=False):
     """Takes as input the token ids of a batch of sequence segments as well
     as the embeddings of tokens from the previous sequence segment, and
-    computes the embedding vectors of the immediate "next" tokens of each token
-    in inputs.
+    computes the embedding vectors of each token in inputs.
 
     Args:
       inputs: int tensor of shape [batch_size, q_seq_len], token ids of the
         input sequence segment.
-      memories: float tensor of shape [batch_size, stach_size, c_seq_len,
+      memories: float tensor of shape [batch_size, stach_size, m_seq_len,
         hidden_size], embeddings of the tokens from the previous sequence
         segment for each layer of the decoder stack.
       training: bool scalar, True if in training mode.
@@ -202,7 +201,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
     Returns:
       outputs: float tensor of shape [batch_size, q_seq_len, hidden_size], the
         final embedding vectors of the input sequence segment.
-      new_memories: float tensor of shape [batch_size, stack_size, c_seq_len,
+      new_memories: float tensor of shape [batch_size, stack_size, m_seq_len,
         hidden_size], the updated embedding vectors of the memory sequence
         segment. 
     """
@@ -231,9 +230,9 @@ class TransformerXLModel(tf.keras.layers.Layer):
         decoder_input: int tensor of shape [batch_size * beam_width, 1], the
           decoded tokens at index `i`.
         cache: dict of entries:
-          'memories': float tensor of shape [batch_size, stack_size, c_seq_len,
-            hidden_size], embeddings of the tokens from the previous sequence
-            segment for each layer of the decoder stack.
+          'memories': float tensor of shape [batch_size * beam_width, stack_size
+            , m_seq_len, hidden_size], embeddings of the tokens from the
+            previous sequence segment for each layer of the decoder stack.
 
       Returns:
         scores: float tensor of shape [batch_size * beam_width, vocab_size].
@@ -254,7 +253,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
     Args:
       inputs: int tensor of shape [batch_size, q_seq_len], token ids of the
         input sequence segment.
-      memories: float tensor of shape [batch_size, stack_size, c_seq_len,
+      memories: float tensor of shape [batch_size, stack_size, m_seq_len,
         hidden_size], embeddings of the tokens from the previous sequence
         segment for each layer of the decoder stack.
       training: bool scalar, True if in training mode.
@@ -262,7 +261,7 @@ class TransformerXLModel(tf.keras.layers.Layer):
     Returns:
       embeddings: float tensor of shape [batch_size, q_seq_len, hidden_size],
         the final embeddings of inputs.
-      new_memories: float tensor of shape [batch_size, stack_size, c_seq_len,
+      new_memories: float tensor of shape [batch_size, stack_size, m_seq_len,
         hidden_size], the updated embedding vectors of the memory sequence
         segment.
     """
@@ -274,12 +273,13 @@ class TransformerXLModel(tf.keras.layers.Layer):
     embeddings = self._embedding_layer(inputs, mode='embedding')
 
     # [1, 1, q_seq_len, q_seq_len + m_seq_len]
+    # c_seq_len := q_seq_len + m_seq_len
     attention_mask = utils.get_look_ahead_mask(q_seq_len, m_seq_len)
 
-    # [q_seq_len + m_seq_len, hidden_size] 
+    # [batch_size, q_seq_len + m_seq_len, hidden_size]
     positional_encoding = utils.get_positional_encoding(batch_size,
           m_seq_len + q_seq_len, self._hidden_size, reverse=True)
-    
+
     embeddings = self._embeddings_dropout_layer(
         embeddings, training=training)
     positional_encoding = self._positional_encoding_dropout_layer(

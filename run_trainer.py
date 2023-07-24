@@ -47,7 +47,7 @@ flags.DEFINE_float(
     'dropout_rate_attention', 0.0, 'Dropout rate applied on the ' 
         'query-to-reference attention matrix.')
 flags.DEFINE_bool(
-    'tie_biases', False, 'Whether to force all layers use the same content '
+    'tie_biases', True, 'Whether to force all layers use the same content '
         'bias and position bias (True), or create the biases for each layer'
         ' (False).')
 
@@ -159,7 +159,6 @@ def main(_):
   trainer = TransformerXLModelTrainer(model, 
                                       m_seq_len, 
                                       batch_size, 
-                                      vocab_size, 
                                       adaptive_embedding)
   trainer.train(dataset, 
                 optimizer, 
